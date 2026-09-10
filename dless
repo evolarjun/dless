@@ -1,4 +1,14 @@
 #!/usr/bin/perl
+#
+# dless is available from https://github.com/evolarjun/dless
+#
+# It was almost entirely vibe-coded by Arjun Prasad and was inspired by and
+# replaces code originally written by Peter Chines at NHGRI
+# 
+# Any feedback is welcome at GitHub, and a public domain license is available
+# there.
+#
+
 use strict;
 use warnings;
 use Getopt::Long qw(:config no_auto_abbrev no_ignore_case);
