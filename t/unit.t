@@ -782,6 +782,56 @@ subtest 'adjust_column_widths --- hide column with :0' => sub {
     is($hidden->[2], 0, 'col 3 hidden flag cleared');
 };
 
+subtest 'adjust_column_widths --- hide column with N- synonym' => sub {
+    my $orig   = [10, 20, 30];
+    my $curr   = [10, 20, 30];
+    my $hidden = [0, 0, 0];
+    my $header = ['col1', 'col2', 'col3'];
+
+    # Hide col 3 with 3-
+    my ($ok, $msg) = adjust_column_widths($orig, $curr, $hidden, $header, '3-', 3);
+    ok($ok, 'col 3 hidden with 3-');
+    is($curr->[2], 1, 'col 3 width set to 1 for |');
+    is($hidden->[2], 1, 'col 3 hidden flag set');
+
+    # Idempotent: hiding again keeps it hidden
+    my ($ok_idempotent) = adjust_column_widths($orig, $curr, $hidden, $header, '3-', 3);
+    ok($ok_idempotent, 'col 3 remains hidden on repeated 3-');
+    is($curr->[2], 1, 'col 3 width remains 1');
+    is($hidden->[2], 1, 'col 3 hidden flag remains 1');
+
+    # Toggle column 3 with '3' restores original
+    adjust_column_widths($orig, $curr, $hidden, $header, '3', 3);
+    is($curr->[2], 30, 'col 3 restored to original width 30');
+    is($hidden->[2], 0, 'col 3 hidden flag cleared');
+
+    # Multi-token with N- (e.g. '1- 2:15 3-')
+    my $curr_m   = [10, 20, 30];
+    my $hidden_m = [0, 0, 0];
+    my ($ok_multi) = adjust_column_widths($orig, $curr_m, $hidden_m, $header, '1- 2:15 3-', 3);
+    ok($ok_multi, 'multiple specifiers with N- succeeded');
+    is($curr_m->[0], 1, 'col 1 hidden with 1-');
+    is($hidden_m->[0], 1, 'col 1 hidden flag set');
+    is($curr_m->[1], 15, 'col 2 set to width 15');
+    is($hidden_m->[1], 0, 'col 2 hidden flag 0');
+    is($curr_m->[2], 1, 'col 3 hidden with 3-');
+    is($hidden_m->[2], 1, 'col 3 hidden flag set');
+
+    # Out of bounds with dash
+    my ($ok_oob, $err_oob) = adjust_column_widths($orig, $curr, $hidden, $header, '4-', 3);
+    ok(!$ok_oob, 'col 4- out of bounds fails');
+    is($err_oob, 'Invalid column number: 4', 'expected error message for out of bounds col');
+
+    my ($ok_zero, $err_zero) = adjust_column_widths($orig, $curr, $hidden, $header, '0-', 3);
+    ok(!$ok_zero, 'col 0- fails (1-based)');
+    is($err_zero, 'Invalid column number: 0', 'expected error message for col 0-');
+
+    # Malformed dash syntax
+    my ($ok_bad, $err_bad) = adjust_column_widths($orig, $curr, $hidden, $header, '-1', 3);
+    ok(!$ok_bad, '-1 fails');
+    is($err_bad, 'Invalid column width specification: -1', 'expected error message for -1');
+};
+
 subtest 'adjust_column_widths --- multiple specifiers on one line' => sub {
     my $orig   = [10, 20, 30, 40];
     my $curr   = [10, 20, 30, 40];
@@ -896,6 +946,7 @@ subtest 'format_usage_message and format_detailed_help' => sub {
     like($help, qr/Search & Filter Commands:/, 'detailed help contains search and filter commands section');
     like($help, qr/Column & Display Commands:/, 'detailed help contains column commands section');
     like($help, qr/Adjust column widths/, 'detailed help describes w command');
+    like($help, qr/N:0,\s*N-/, 'detailed help lists N- synonym for hiding columns');
 };
 
 done_testing();

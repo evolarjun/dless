@@ -782,6 +782,27 @@ subtest 'w key custom width and hide column' => sub {
     teardown();
 };
 
+subtest 'w key hides column using N- synonym' => sub {
+    launch(cmd => "$dless $fixtures/basic.tsv");
+
+    # Hide col 1 with 1-
+    send_keys('w', '1', '-', 'Enter');
+    select(undef, undef, undef, 0.05);
+
+    my $hidden = capture();
+    like($hidden, qr/\|\s+age/, 'col 1 header hidden with | using 1-');
+    like($hidden, qr/\|\s+30/,  'col 1 data hidden with | using 1-');
+
+    # Toggle col 1 back with 1
+    send_keys('w', '1', 'Enter');
+    select(undef, undef, undef, 0.05);
+
+    my $restored = capture();
+    like($restored, qr/name\s{2}age/, 'col 1 header restored after typing 1');
+
+    teardown();
+};
+
 subtest 'w key hides multiple adjacent columns as ||' => sub {
     launch(cmd => "$dless $fixtures/basic.tsv");
 

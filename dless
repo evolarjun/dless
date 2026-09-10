@@ -77,7 +77,7 @@ Column & Display Commands:
                       <empty>  Reset all columns to original full widths
                       N Toggle column N between header width and full width
                       N:W      Set column N to width W
-                      N:0      Hide column N entirely (rendered as '|')
+                      N:0, N-  Hide column N entirely (rendered as '|')
                     Multiple specifiers can be space-separated 
                       (e.g. '1 2:10 3:0')
   -N, N             Toggle line numbers on/off (prompts for Enter confirmation)
@@ -504,7 +504,7 @@ sub build_colnum_line {
 # $curr_widths_ref : arrayref of current column widths (modified in-place)
 # $is_hidden_ref   : arrayref of column hidden flags (0 or 1, modified in-place)
 # $header_ref      : arrayref of header strings
-# $input           : user input string ('', '<col>', '<col>:<width>', '<col>:0', or multiple separated by space)
+# $input           : user input string ('', '<col>', '<col>:<width>', '<col>:0', '<col>-', or multiple separated by space)
 # $n_cols          : number of columns
 # Returns ($success, $status_message)
 sub adjust_column_widths {
@@ -525,8 +525,8 @@ sub adjust_column_widths {
 
     # Validate all tokens first
     for my $tok (@tokens) {
-        if ($tok =~ /^(\d+)(?::(\d+))?$/) {
-            my ($col_num, $w) = ($1, $2);
+        if ($tok =~ /^(\d+)(?:(?::(\d+))|(-))?$/) {
+            my $col_num = $1;
             if ($col_num < 1 || $col_num > $n_cols) {
                 return (0, "Invalid column number: $col_num");
             }
@@ -537,7 +537,12 @@ sub adjust_column_widths {
 
     # Apply each token in order
     for my $tok (@tokens) {
-        if ($tok =~ /^(\d+):(\d+)$/) {
+        if ($tok =~ /^(\d+)-$/) {
+            my $col_num = $1;
+            my $ci = $col_num - 1;
+            $curr_widths_ref->[$ci] = 1;
+            $is_hidden_ref->[$ci]   = 1;
+        } elsif ($tok =~ /^(\d+):(\d+)$/) {
             my ($col_num, $w) = ($1, $2);
             my $ci = $col_num - 1;
             if ($w == 0) {
