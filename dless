@@ -42,7 +42,8 @@ sub format_detailed_help {
 Usage: dless [-d DELIM | -c] [-N] [FILE]
        cat FILE | dless [-d DELIM | -c] [-N]
 
-A tab-delimited or CSV file viewer with fixed-width columns and horizontal scrolling.
+A tab-delimited or CSV file viewer with fixed-width columns and horizontal
+scrolling.
 
 Options:
   -d, --delimiter DELIM  Field delimiter (default: tab)
@@ -51,38 +52,39 @@ Options:
   -h, --help             Show this detailed help message
 
 Navigation Commands:
-  Up, k                  Scroll up one row
-  Down, j                Scroll down one row
-  Left                   Scroll left 10 characters
-  Right                  Scroll right 10 characters
-  Tab                    Scroll right 4/5 of viewport width
-  Shift-Tab              Scroll left 4/5 of viewport width
-  b, Ctrl-B, Backspace   Scroll up one screenful (page)
-  f, Ctrl-F, Space       Scroll down one screenful (page)
-  g, Home                Jump to first row
-  G, End                 Jump to last row
+  Up, k             Scroll up one row
+  Down, j           Scroll down one row
+  Left              Scroll left 10 characters
+  Right             Scroll right 10 characters
+  Tab               Scroll right 4/5 of viewport width
+  Shift-Tab         Scroll left 4/5 of viewport width
+  b, Ctrl-B, Bksp   Scroll up one screenful (page)
+  f, Ctrl-F, Space  Scroll down one screenful (page)
+  g, Home           Jump to first row
+  G, End            Jump to last row
 
 Search & Filter Commands:
-  /                      Search data rows with a regular expression
-  &                      Filter data rows matching a regular expression
-                         (submitting an empty prompt clears the filter)
-  n                      Jump to next search match
-  p                      Jump to previous search match
+  /                 Search data rows with a regular expression
+  &                 Filter data rows matching a regular expression
+                    (submitting an empty prompt clears the filter)
+  n                 Jump to next search match
+  p                 Jump to previous search match
 
 Column & Display Commands:
-  1                      Toggle 1-based column numbers above headers
-  0                      Toggle 0-based column numbers above headers
-  w                      Adjust column widths (prompts for column specifiers):
-                           <empty>  Reset all columns to original full widths
-                           N        Toggle column N between header width and full width
-                           N:W      Set column N to width W
-                           N:0      Hide column N entirely (rendered as '|')
-                         Multiple specifiers can be space-separated (e.g. '1 2:10 3:0')
-  -N, N                  Toggle line numbers on/off (prompts for Enter confirmation)
+  1                 Toggle 1-based column numbers above headers
+  0                 Toggle 0-based column numbers above headers
+  w                 Adjust column widths (prompts for column specifiers):
+                      <empty>  Reset all columns to original full widths
+                      N Toggle column N between header width and full width
+                      N:W      Set column N to width W
+                      N:0      Hide column N entirely (rendered as '|')
+                    Multiple specifiers can be space-separated 
+                      (e.g. '1 2:10 3:0')
+  -N, N             Toggle line numbers on/off (prompts for Enter confirmation)
 
 General Commands:
-  h, ?                   Toggle interactive keybinding help overlay
-  q                      Quit viewer
+  h, ?              Toggle interactive keybinding help overlay
+  q                 Quit viewer
 END
 }
 
