@@ -1,10 +1,10 @@
-# t2v AI Agent Instructions
+# dless AI Agent Instructions
 
 If you are an AI coding assistant interacting with this project, please follow these guidelines to understand the architecture, run tests, and maintain code quality.
 
 ## Project Overview
 
-t2d is a TUI interface for viewing tab-delimited data written in perl
+dless is a TUI interface for viewing tab-delimited data written in perl
 
 ## Testing Strategy (IMPORTANT)
 

@@ -20,8 +20,8 @@ my $HOME      = "\e[H";
 # ------ Usage & Help ------------------------------
 sub format_usage_message {
     return <<"END";
-Usage: t2v [-d DELIM | -c] [-N] [FILE]
-       cat FILE | t2v [-d DELIM | -c] [-N]
+Usage: dless [-d DELIM | -c] [-N] [FILE]
+       cat FILE | dless [-d DELIM | -c] [-N]
 
 A tab-delimited or CSV file viewer with fixed-width columns and horizontal scrolling.
 
@@ -39,8 +39,8 @@ END
 
 sub format_detailed_help {
     return <<"END";
-Usage: t2v [-d DELIM | -c] [-N] [FILE]
-       cat FILE | t2v [-d DELIM | -c] [-N]
+Usage: dless [-d DELIM | -c] [-N] [FILE]
+       cat FILE | dless [-d DELIM | -c] [-N]
 
 A tab-delimited or CSV file viewer with fixed-width columns and horizontal scrolling.
 
@@ -664,7 +664,7 @@ sub add_to_history {
     return $history_aref;
 }
 
-# Load history file (~/.t2v_history or specified path).
+# Load history file (~/.dless_history or specified path).
 # Lines starting with '/' are search history; lines starting with '&' are filter history.
 # Returns (\@search_history, \@filter_history).
 sub load_history_file {
@@ -893,7 +893,7 @@ sub _main {
     detailed_help() if $opt_help;
 
     if ($opt_csv && defined $opt_delim) {
-        print STDERR "t2v: Cannot specify both --csv and --delimiter\n";
+        print STDERR "dless: Cannot specify both --csv and --delimiter\n";
         usage();
     }
     if ($opt_csv) {
@@ -928,10 +928,10 @@ sub _main {
                     : undef;
             $reopened = open(STDIN, '<', $tty) if defined $tty;
         }
-        die "t2v: Cannot open terminal for interactive input: $!\n" unless $reopened;
+        die "dless: Cannot open terminal for interactive input: $!\n" unless $reopened;
     } elsif (@ARGV) {
         $filename = $ARGV[0];
-        open(my $fh, '<', $filename) or die "t2v: Cannot open '$filename': $!\n";
+        open(my $fh, '<', $filename) or die "dless: Cannot open '$filename': $!\n";
         if ($opt_csv) {
             while (my $line = <$fh>) {
                 push @all_rows, parse_csv_line($line, sub { scalar <$fh> });
@@ -948,7 +948,7 @@ sub _main {
     }
 
     if (@all_rows == 0) {
-        die "t2v: empty input\n";
+        die "dless: empty input\n";
     }
 
     # ------ Separate header + data ------------------------------
@@ -973,7 +973,7 @@ sub _main {
     my ($term_rows, $term_cols) = _get_term_size();
 
     # ------ Terminal setup + cleanup ------------------------------
-    my $history_file = defined $ENV{HOME} ? "$ENV{HOME}/.t2v_history" : undef;
+    my $history_file = defined $ENV{HOME} ? "$ENV{HOME}/.dless_history" : undef;
     my ($search_history_ref, $filter_history_ref) = load_history_file($history_file);
 
     my $cleaned_up = 0;
@@ -1483,4 +1483,4 @@ sub _get_term_size {
     return ($s[1] || 24, $s[0] || 80);  # (rows, cols)
 }
 
-1; # allow `do './t2v'` in tests
+1; # allow `do './dless'` in tests

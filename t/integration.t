@@ -6,9 +6,9 @@ use FindBin qw($Bin);
 use POSIX qw(SIGTERM);
 
 # ------ Helpers ------------------------------
-my $t2v      = "$Bin/../t2v";
+my $dless      = "$Bin/../dless";
 my $fixtures = "$Bin/fixtures";
-my $SESSION  = "t2v_test_$$";  # unique session name per test run
+my $SESSION  = "dless_test_$$";  # unique session name per test run
 
 # Ensure tmux is available.
 my $tmux = `which tmux 2>/dev/null`;
@@ -21,11 +21,11 @@ my $current_width  = 80;
 my $current_height = 24;
 my @current_keys   = ();
 
-# Launch t2v in a tmux pane of fixed size and return the session name.
+# Launch dless in a tmux pane of fixed size and return the session name.
 # Returns session name (same as $SESSION) on success.
 sub launch {
     my (%opts) = @_;
-    my $cmd     = $opts{cmd}    // "$t2v $fixtures/basic.tsv";
+    my $cmd     = $opts{cmd}    // "$dless $fixtures/basic.tsv";
     my $width   = $opts{width}  // 80;
     my $height  = $opts{height} // 24;
     my $reuse   = $opts{reuse}  // 0;
@@ -113,7 +113,7 @@ subtest 'data rows appear' => sub {
 subtest 'status bar shows filename and row info' => sub {
     launch(reuse => 1);
     my $screen = capture();
-    like($screen, qr/t2v\/t\//, 'status bar shows path containing t2v/t/');
+    like($screen, qr/dless\/t\//, 'status bar shows path containing dless/t/');
     like($screen, qr/Rows\s+\d+-\d+\s+of\s+\d+/, 'status bar shows row range');
     like($screen, qr/Col offset:\s*0/, 'status bar shows horizontal offset = 0');
     teardown();
@@ -192,7 +192,7 @@ subtest 'vertical scroll --- G jumps to last row' => sub {
 };
 
 subtest 'horizontal scroll --- right shifts content' => sub {
-    launch(cmd => "$t2v $fixtures/wide.tsv", width => 80);
+    launch(cmd => "$dless $fixtures/wide.tsv", width => 80);
     my $before = capture();
     like($before, qr/col1/, 'col1 header visible before scroll');
 
@@ -204,7 +204,7 @@ subtest 'horizontal scroll --- right shifts content' => sub {
 };
 
 subtest 'horizontal scroll --- Left at offset 0 stays at 0' => sub {
-    launch(cmd => "$t2v $fixtures/wide.tsv", width => 80);
+    launch(cmd => "$dless $fixtures/wide.tsv", width => 80);
     send_keys('Left');
     my $screen = capture();
     like($screen, qr/Col offset:\s*0/, 'offset stays 0 at left boundary');
@@ -252,8 +252,8 @@ subtest 'q quits the viewer' => sub {
     teardown();
 };
 
-subtest 'pipe input (cat | t2v)' => sub {
-    launch(cmd => "cat $fixtures/basic.tsv | $t2v");
+subtest 'pipe input (cat | dless)' => sub {
+    launch(cmd => "cat $fixtures/basic.tsv | $dless");
     my $screen = capture();
     like($screen, qr/name/,   'header visible from piped input');
     like($screen, qr/Alice/,  'data visible from piped input');
@@ -262,7 +262,7 @@ subtest 'pipe input (cat | t2v)' => sub {
 };
 
 subtest 'custom delimiter -d' => sub {
-    launch(cmd => "$t2v -d , $fixtures/csv.csv");
+    launch(cmd => "$dless -d , $fixtures/csv.csv");
     my $screen = capture();
     like($screen, qr/product/,  'CSV header "product" visible');
     like($screen, qr/price/,    'CSV header "price" visible');
@@ -271,7 +271,7 @@ subtest 'custom delimiter -d' => sub {
 };
 
 subtest 'page down scrolls by one screenful' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv", height => 8);
+    launch(cmd => "$dless $fixtures/basic.tsv", height => 8);
 
     my $before = capture();
     like($before, qr/Alice/, 'Alice visible before PgDn');
@@ -286,7 +286,7 @@ subtest 'page down scrolls by one screenful' => sub {
 };
 
 subtest 'space bar scrolls by one screenful (PgDn synonym)' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv", height => 8, reuse => 1);
+    launch(cmd => "$dless $fixtures/basic.tsv", height => 8, reuse => 1);
 
     my $before = capture();
     like($before, qr/Alice/, 'Alice visible before Space');
@@ -301,7 +301,7 @@ subtest 'space bar scrolls by one screenful (PgDn synonym)' => sub {
 };
 
 subtest 'backspace key scrolls up by one screenful (PgUp synonym)' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv", height => 8, reuse => 1);
+    launch(cmd => "$dless $fixtures/basic.tsv", height => 8, reuse => 1);
 
     send_keys('Space');
     select(undef, undef, undef, 0.05);
@@ -317,7 +317,7 @@ subtest 'backspace key scrolls up by one screenful (PgUp synonym)' => sub {
 };
 
 subtest 'C-f and f scroll down by one screenful (PgDn synonyms)' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv", height => 8, reuse => 1);
+    launch(cmd => "$dless $fixtures/basic.tsv", height => 8, reuse => 1);
 
     send_keys('C-f');
     select(undef, undef, undef, 0.05);
@@ -335,7 +335,7 @@ subtest 'C-f and f scroll down by one screenful (PgDn synonyms)' => sub {
 };
 
 subtest 'C-b scrolls up by one screenful (PgUp synonym)' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv", height => 8, reuse => 1);
+    launch(cmd => "$dless $fixtures/basic.tsv", height => 8, reuse => 1);
 
     send_keys('Space');
     select(undef, undef, undef, 0.05);
@@ -350,7 +350,7 @@ subtest 'C-b scrolls up by one screenful (PgUp synonym)' => sub {
 };
 
 subtest '-N flag shows line numbers' => sub {
-    launch(cmd => "$t2v -N $fixtures/basic.tsv");
+    launch(cmd => "$dless -N $fixtures/basic.tsv");
     my $screen = capture();
     like($screen, qr/^\s*1\s+Alice/m, 'line number 1 visible next to Alice');
     like($screen, qr/^\s*10\s+Jack/m, 'line number 10 visible next to Jack');
@@ -358,12 +358,12 @@ subtest '-N flag shows line numbers' => sub {
 };
 
 subtest '-n flag is invalid when -N is required' => sub {
-    my $out = `$t2v -n $fixtures/basic.tsv 2>&1`;
+    my $out = `$dless -n $fixtures/basic.tsv 2>&1`;
     like($out, qr/Unknown option: n|Usage/i, '-n flag rejected when -N is required');
 };
 
 subtest '-N flag freezes line numbers column during horizontal scroll' => sub {
-    launch(cmd => "$t2v -N $fixtures/wide.tsv", width => 80);
+    launch(cmd => "$dless -N $fixtures/wide.tsv", width => 80);
     send_keys('Right');
     my $screen = capture();
     like($screen, qr/^\s*1\s+/m, 'line number 1 remains frozen on left after horizontal scroll');
@@ -372,7 +372,7 @@ subtest '-N flag freezes line numbers column during horizontal scroll' => sub {
 };
 
 subtest 'N key toggles line numbers' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
     my $before = capture();
     unlike($before, qr/^\s*1\s+Alice/m, 'line numbers not shown by default');
 
@@ -404,7 +404,7 @@ subtest 'N key toggles line numbers' => sub {
 };
 
 subtest 'pressing Esc after - cancels prompt and returns to normal operation' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
     send_keys('-');
     select(undef, undef, undef, 0.2);
 
@@ -453,7 +453,7 @@ subtest '1 and 0 keys toggle column numbers' => sub {
 };
 
 subtest 'search prompt and regex matching' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
     send_keys('/');
     select(undef, undef, undef, 0.05);
 
@@ -470,7 +470,7 @@ subtest 'search prompt and regex matching' => sub {
 };
 
 subtest 'search logic --- n and p navigation with wrap around' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv", reuse => 1);
+    launch(cmd => "$dless $fixtures/basic.tsv", reuse => 1);
 
     send_keys('n');
     select(undef, undef, undef, 0.05);
@@ -488,7 +488,7 @@ subtest 'search logic --- n and p navigation with wrap around' => sub {
 };
 
 subtest 'invalid regex handling' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv", reuse => 1);
+    launch(cmd => "$dless $fixtures/basic.tsv", reuse => 1);
     send_keys('/', '[', 'Enter');
     select(undef, undef, undef, 0.05);
 
@@ -499,7 +499,7 @@ subtest 'invalid regex handling' => sub {
 };
 
 subtest '& option filters rows by regex and empty expression clears filter' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv", reuse => 1);
+    launch(cmd => "$dless $fixtures/basic.tsv", reuse => 1);
 
     send_keys('&');
     select(undef, undef, undef, 0.05);
@@ -527,7 +527,7 @@ subtest '& option filters rows by regex and empty expression clears filter' => s
 subtest 'Tab scrolls right 4/5 viewport' => sub {
     # wide.tsv has 15 columns; viewport is 80 wide, so step = int(80*4/5) = 64
     # col1..col5 headers are visible at offset 0; after one Tab they should scroll off
-    launch(cmd => "$t2v $fixtures/wide.tsv", width => 80);
+    launch(cmd => "$dless $fixtures/wide.tsv", width => 80);
     my $before = capture();
     like($before, qr/col1/, 'col1 visible before Tab');
 
@@ -542,7 +542,7 @@ subtest 'Tab scrolls right 4/5 viewport' => sub {
 
 subtest 'Shift-Tab scrolls left 4/5 viewport' => sub {
     # Start scrolled right with Tab, then Shift-Tab should bring col1 back
-    launch(cmd => "$t2v $fixtures/wide.tsv", width => 80, reuse => 1);
+    launch(cmd => "$dless $fixtures/wide.tsv", width => 80, reuse => 1);
 
     my $after_tab = capture();
     unlike($after_tab, qr/\bcol1\b/, 'col1 scrolled off after Tab');
@@ -561,7 +561,7 @@ subtest 'Shift-Tab scrolls left 4/5 viewport' => sub {
 # ------------------------------
 
 subtest 'search history recall with Up arrow' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # Run search for Bob
     send_keys('/', 'B', 'o', 'b', 'Enter');
@@ -585,7 +585,7 @@ subtest 'search history recall with Up arrow' => sub {
 };
 
 subtest 'filter history recall and edit with Up arrow' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # Run filter for Alice
     send_keys('&', 'A', 'l', 'i', 'c', 'e', 'Enter');
@@ -638,7 +638,7 @@ subtest 'filter history recall and edit with Up arrow' => sub {
 };
 
 subtest 'multi-field search across column boundaries' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # Search for pattern spanning name and age: 'Alice\t30'
     send_keys('/', 'A', 'l', 'i', 'c', 'e', 'Tab', '3', '0', 'Enter');
@@ -651,7 +651,7 @@ subtest 'multi-field search across column boundaries' => sub {
 };
 
 subtest 'multi-field filter across column boundaries' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # Filter by pattern spanning name and age: 'Alice\t30'
     send_keys('&', 'A', 'l', 'i', 'c', 'e', 'Tab', '3', '0', 'Enter');
@@ -665,7 +665,7 @@ subtest 'multi-field filter across column boundaries' => sub {
 };
 
 subtest 'csv option --csv with RFC 4180 parsing' => sub {
-    launch(cmd => "$t2v --csv $fixtures/quoted.csv");
+    launch(cmd => "$dless --csv $fixtures/quoted.csv");
     my $screen = capture();
 
     like($screen, qr/name/, 'header visible');
@@ -677,7 +677,7 @@ subtest 'csv option --csv with RFC 4180 parsing' => sub {
 };
 
 subtest 'csv short option -c' => sub {
-    launch(cmd => "$t2v -c $fixtures/quoted.csv");
+    launch(cmd => "$dless -c $fixtures/quoted.csv");
     my $screen = capture();
 
     like($screen, qr/Widget, Basic/, 'works with -c flag');
@@ -685,7 +685,7 @@ subtest 'csv short option -c' => sub {
 };
 
 subtest 'long delimiter option --delimiter' => sub {
-    launch(cmd => "$t2v --delimiter , $fixtures/csv.csv");
+    launch(cmd => "$dless --delimiter , $fixtures/csv.csv");
     my $screen = capture();
 
     like($screen, qr/product/, 'header visible with --delimiter');
@@ -694,7 +694,7 @@ subtest 'long delimiter option --delimiter' => sub {
 };
 
 subtest 'search in CSV mode matches unquoted clean data' => sub {
-    launch(cmd => "$t2v --csv $fixtures/quoted.csv");
+    launch(cmd => "$dless --csv $fixtures/quoted.csv");
 
     send_keys('/', 'W', 'i', 'd', 'g', 'e', 't', ' ', '"', 'P', 'r', 'o', '"', 'Enter');
     select(undef, undef, undef, 0.2);
@@ -706,7 +706,7 @@ subtest 'search in CSV mode matches unquoted clean data' => sub {
 };
 
 subtest 'w key prompt and column number display' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # Initially column numbers are hidden
     my $initial = capture();
@@ -731,7 +731,7 @@ subtest 'w key prompt and column number display' => sub {
 };
 
 subtest 'w key shrinks column to header length and toggles back' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # In basic.tsv: col 1 is 'name' (longest 'Grace'=5), col 2 is 'age' (3)
     # Shrink col 1 to header length ('name'=4)
@@ -753,7 +753,7 @@ subtest 'w key shrinks column to header length and toggles back' => sub {
 };
 
 subtest 'w key custom width and hide column' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # Hide col 1 with 1:0
     send_keys('w', '1', ':', '0', 'Enter');
@@ -783,7 +783,7 @@ subtest 'w key custom width and hide column' => sub {
 };
 
 subtest 'w key hides multiple adjacent columns as ||' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # Hide col 2 (age) and col 3 (score)
     send_keys('w', '2', ':', '0', 'Enter');
@@ -799,7 +799,7 @@ subtest 'w key hides multiple adjacent columns as ||' => sub {
 };
 
 subtest 'w key accepts multiple column specifiers on one line' => sub {
-    launch(cmd => "$t2v $fixtures/basic.tsv");
+    launch(cmd => "$dless $fixtures/basic.tsv");
 
     # Enter multiple specifiers: shrink col 1 (name), hide col 2 (age), set col 3 (score) to 12
     send_keys('w', '1', ' ', '2', ':', '0', ' ', '3', ':', '1', '2', 'Enter');
@@ -818,14 +818,14 @@ subtest 'w key accepts multiple column specifiers on one line' => sub {
 
 subtest 'CLI usage vs detailed help flags' => sub {
     # No args (interactive terminal invocation): exits 1 and prints short usage to STDERR
-    my $no_args_out = `$t2v 2>&1`;
+    my $no_args_out = `$dless 2>&1`;
     my $no_args_exit = $? >> 8;
     is($no_args_exit, 1, 'no args exits with code 1');
-    like($no_args_out, qr/Usage: t2v/, 'no args prints usage');
+    like($no_args_out, qr/Usage: dless/, 'no args prints usage');
     unlike($no_args_out, qr/Navigation Commands:/, 'no args does not print detailed command list');
 
     # -h flag: exits 0 and prints detailed help
-    my $short_h_out = `$t2v -h 2>&1`;
+    my $short_h_out = `$dless -h 2>&1`;
     my $short_h_exit = $? >> 8;
     is($short_h_exit, 0, '-h exits with code 0');
     like($short_h_out, qr/Navigation Commands:/, '-h includes navigation commands');
@@ -833,7 +833,7 @@ subtest 'CLI usage vs detailed help flags' => sub {
     like($short_h_out, qr/Column & Display Commands:/, '-h includes column commands');
 
     # --help flag: exits 0 and prints detailed help
-    my $long_h_out = `$t2v --help 2>&1`;
+    my $long_h_out = `$dless --help 2>&1`;
     my $long_h_exit = $? >> 8;
     is($long_h_exit, 0, '--help exits with code 0');
     like($long_h_out, qr/Navigation Commands:/, '--help includes navigation commands');

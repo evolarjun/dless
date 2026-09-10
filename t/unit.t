@@ -4,11 +4,11 @@ use warnings;
 use Test::More;
 use FindBin qw($Bin);
 
-# ------ Load the t2v script without running _main() ------------------------------
-# The `unless (caller())` guard in t2v prevents _main() from running when
+# ------ Load the dless script without running _main() ------------------------------
+# The `unless (caller())` guard in dless prevents _main() from running when
 # the file is loaded via `do`.
-my $t2v = "$Bin/../t2v";
-do $t2v or die "Could not load $t2v: $@";
+my $dless = "$Bin/../dless";
+do $dless or die "Could not load $dless: $@";
 
 # ------ Helpers ------------------------------
 sub strip_ansi { (my $s = $_[0]) =~ s/\e\[[0-9;]*[mABCDHJKfsuhl]//g; $s }
@@ -474,7 +474,7 @@ subtest 'load_history_file & save_history_file' => sub {
     my $temp_file = File::Temp->new(UNLINK => 1)->filename;
 
     # Missing file returns empty arrays
-    my ($search_h, $filter_h) = load_history_file('/path/to/nonexistent/t2v_history_test');
+    my ($search_h, $filter_h) = load_history_file('/path/to/nonexistent/dless_history_test');
     is_deeply($search_h, [], 'search history empty for missing file');
     is_deeply($filter_h, [], 'filter history empty for missing file');
 
@@ -859,8 +859,8 @@ subtest 'multiple adjacent hidden columns rendered without spaces' => sub {
 };
 
 subtest 'help box dimensions and format' => sub {
-    # Verify that the help box lines in t2v are uniform in width and under 24 lines tall
-    open my $fh, '<', "$Bin/../t2v" or die $!;
+    # Verify that the help box lines in dless are uniform in width and under 24 lines tall
+    open my $fh, '<', "$Bin/../dless" or die $!;
     my @help_lines;
     my $in_help = 0;
     while (my $line = <$fh>) {
@@ -886,12 +886,12 @@ subtest 'help box dimensions and format' => sub {
 
 subtest 'format_usage_message and format_detailed_help' => sub {
     my $usage = format_usage_message();
-    like($usage, qr/Usage: t2v/, 'usage contains usage line');
+    like($usage, qr/Usage: dless/, 'usage contains usage line');
     like($usage, qr/--delimiter/, 'usage lists options');
     unlike($usage, qr/Navigation Commands:/, 'short usage does not contain full command list');
 
     my $help = format_detailed_help();
-    like($help, qr/Usage: t2v/, 'detailed help contains usage line');
+    like($help, qr/Usage: dless/, 'detailed help contains usage line');
     like($help, qr/Navigation Commands:/, 'detailed help contains navigation commands section');
     like($help, qr/Search & Filter Commands:/, 'detailed help contains search and filter commands section');
     like($help, qr/Column & Display Commands:/, 'detailed help contains column commands section');

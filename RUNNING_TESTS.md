@@ -1,6 +1,6 @@
-# Running Tests in t2v
+# Running Tests in dless
 
-This document explains how to run unit and integration tests for `t2v`, including sandbox requirements for terminal integration tests.
+This document explains how to run unit and integration tests for `dless`, including sandbox requirements for terminal integration tests.
 
 ## Test Suite Structure
 
@@ -8,12 +8,12 @@ The test suite consists of two test files under `t/`:
 
 1. `t/unit.t` (Unit Tests)
    - Evaluates pure functions, calculations, cell formatting, search, and row filtering logic.
-   - Loads `t2v` directly into the Perl process (`do "t2v"`).
+   - Loads `dless` directly into the Perl process (`do "dless"`).
    - Runs fast without requiring external subprocesses or terminal emulators.
 
 2. `t/integration.t` (Integration Tests)
    - Evaluates interactive TUI behavior (scrolling, keybindings, prompts, help screen).
-   - Launches `t2v` inside background `tmux` sessions to inspect terminal output and test key input sequences.
+   - Launches `dless` inside background `tmux` sessions to inspect terminal output and test key input sequences.
 
 ## Running Tests
 
