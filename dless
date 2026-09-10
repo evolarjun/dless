@@ -20,11 +20,10 @@ my $HOME      = "\e[H";
 # ------ Usage & Help ------------------------------
 sub format_usage_message {
     return <<"END";
+Tab-delimited or CSV file viewer.
+
 Usage: dless [-d DELIM | -c] [-N] [FILE]
        cat FILE | dless [-d DELIM | -c] [-N]
-
-A tab-delimited or CSV file viewer with fixed-width columns and horizontal scrolling.
-
 Options:
   -d, --delimiter DELIM  Field delimiter (default: tab)
   -c, --csv              Parse RFC 4180 CSV (removes quotes and unescapes data)

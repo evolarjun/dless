@@ -27,7 +27,13 @@ E.g.:
 ```sh
 curl -o ~/bin/dless \
   https://raw.githubusercontent.com/aprasad/dless/main/dless \
-  && chmod +x ~/bin/dless
+  && chmod +x ~/bin/dless \
+  && ln -s dless ~/bin/dl
 ```
 
+For convenient viewing of csv files I also add the following to my `.bash_profile`
+
+```sh
+alias cl='dless --csv'
+```
 Ensure `~/bin` is in your `PATH` (for example, by adding `export PATH="$HOME/bin:$PATH"` to your shell profile).
