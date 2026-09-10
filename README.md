@@ -26,7 +26,7 @@ cpanm Term::ReadKey
 E.g.:
 ```sh
 curl -o ~/bin/dless \
-  https://raw.githubusercontent.com/aprasad/dless/main/dless \
+  https://raw.githubusercontent.com/evolarjun/dless/refs/heads/main/dless \
   && chmod +x ~/bin/dless \
   && ln -s dless ~/bin/dl
 ```
