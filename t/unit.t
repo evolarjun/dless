@@ -947,6 +947,29 @@ subtest 'format_usage_message and format_detailed_help' => sub {
     like($help, qr/Column & Display Commands:/, 'detailed help contains column commands section');
     like($help, qr/Adjust column widths/, 'detailed help describes w command');
     like($help, qr/N:0,\s*N-/, 'detailed help lists N- synonym for hiding columns');
+    like($help, qr/gzip|zstd/i, 'detailed help mentions automatic decompression');
+};
+
+subtest 'detect_compression pure function' => sub {
+    # Magic bytes check
+    is(detect_compression("\x1f\x8b\x08\x00"), 'gzip', 'detects gzip from magic bytes');
+    is(detect_compression("\x28\xb5\x2f\xfd"), 'zstd', 'detects zstd from magic bytes');
+
+    # Filename extension fallback
+    is(detect_compression("data", "data.tsv.gz"), 'gzip', 'detects gzip from .gz extension');
+    is(detect_compression("data", "data.tsv.zst"), 'zstd', 'detects zstd from .zst extension');
+    is(detect_compression("data", "data.tsv.zstd"), 'zstd', 'detects zstd from .zstd extension');
+
+    # Uncompressed / plain text
+    is(detect_compression("name\tage\n", "basic.tsv"), undef, 'plain text returns undef');
+    is(detect_compression(""), undef, 'empty header returns undef');
+};
+
+subtest 'get_decompressor_command pure function' => sub {
+    is_deeply([get_decompressor_command('gzip', 'foo.gz')], ['gzip', '-dc', '--', 'foo.gz'], 'gzip command with file');
+    is_deeply([get_decompressor_command('gzip')], ['gzip', '-dc'], 'gzip command without file (stdin)');
+    is_deeply([get_decompressor_command('zstd', 'foo.zst')], ['zstd', '-dc', '--', 'foo.zst'], 'zstd command with file');
+    is_deeply([get_decompressor_command('zstd')], ['zstd', '-dc'], 'zstd command without file (stdin)');
 };
 
 done_testing();

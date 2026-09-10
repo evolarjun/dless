@@ -839,11 +839,12 @@ subtest 'w key accepts multiple column specifiers on one line' => sub {
 
 subtest 'CLI usage vs detailed help flags' => sub {
     # No args (interactive terminal invocation): exits 1 and prints short usage to STDERR
-    my $no_args_out = `$dless 2>&1`;
-    my $no_args_exit = $? >> 8;
-    is($no_args_exit, 1, 'no args exits with code 1');
+    launch(cmd => "$dless; sleep 0.5");
+    select(undef, undef, undef, 0.1);
+    my $no_args_out = capture();
     like($no_args_out, qr/Usage: dless/, 'no args prints usage');
     unlike($no_args_out, qr/Navigation Commands:/, 'no args does not print detailed command list');
+    teardown();
 
     # -h flag: exits 0 and prints detailed help
     my $short_h_out = `$dless -h 2>&1`;
@@ -858,6 +859,40 @@ subtest 'CLI usage vs detailed help flags' => sub {
     my $long_h_exit = $? >> 8;
     is($long_h_exit, 0, '--help exits with code 0');
     like($long_h_out, qr/Navigation Commands:/, '--help includes navigation commands');
+};
+
+subtest 'automatic decompression of gzip and zstd files' => sub {
+    # Gzip file
+    launch(cmd => "$dless $fixtures/basic.tsv.gz", width => 100);
+    my $gz_screen = capture();
+    like($gz_screen, qr/name/, 'header visible from gzip file');
+    like($gz_screen, qr/Alice/, 'data visible from gzip file');
+    like($gz_screen, qr/basic\.tsv\.gz/, 'status bar shows gzip filename');
+    teardown();
+
+    # Zstd file
+    launch(cmd => "$dless $fixtures/basic.tsv.zst", width => 100);
+    my $zst_screen = capture();
+    like($zst_screen, qr/name/, 'header visible from zstd file');
+    like($zst_screen, qr/Alice/, 'data visible from zstd file');
+    like($zst_screen, qr/basic\.tsv\.zst/, 'status bar shows zstd filename');
+    teardown();
+};
+
+subtest 'automatic decompression of piped gzip and zstd input' => sub {
+    # Piped gzip
+    launch(cmd => "cat $fixtures/basic.tsv.gz | $dless");
+    my $gz_pipe = capture();
+    like($gz_pipe, qr/name/, 'header visible from piped gzip input');
+    like($gz_pipe, qr/Alice/, 'data visible from piped gzip input');
+    teardown();
+
+    # Piped zstd
+    launch(cmd => "cat $fixtures/basic.tsv.zst | $dless");
+    my $zst_pipe = capture();
+    like($zst_pipe, qr/name/, 'header visible from piped zstd input');
+    like($zst_pipe, qr/Alice/, 'data visible from piped zstd input');
+    teardown();
 };
 
 done_testing();

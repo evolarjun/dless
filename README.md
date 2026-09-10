@@ -1,6 +1,6 @@
 # dless
 
-`dless` is a terminal-based pager (TUI) for viewing tab-delimited or CSV data. It formats fields into fixed-width columns, keeps headers visible while scrolling vertically, and supports horizontal scrolling to inspect wide datasets. The UI is relatively simple and mostly follows [less(1)](https://linux.die.net/man/1/less). If you need anything more capable or sophisticated I recommend [VisiData](https://www.visidata.org) which has many more features.
+`dless` is a terminal-based pager (TUI) for viewing tab-delimited or CSV data. It formats fields into fixed-width columns, keeps headers visible while scrolling vertically, and supports horizontal scrolling to inspect wide datasets. Gzip and zstd compressed files or streams are automatically decompressed. The UI is relatively simple and mostly follows [less(1)](https://linux.die.net/man/1/less). If you need anything more capable or sophisticated I recommend [VisiData](https://www.visidata.org) which has many more features.
 
 ## Prerequisites
 

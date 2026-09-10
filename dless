@@ -52,7 +52,7 @@ Usage: dless [-d DELIM | -c] [-N] [FILE]
        cat FILE | dless [-d DELIM | -c] [-N]
 
 A tab-delimited or CSV file viewer with fixed-width columns and horizontal
-scrolling.
+scrolling. Supports automatic decompression of gzip and zstd files.
 
 Options:
   -d, --delimiter DELIM  Field delimiter (default: tab)
@@ -110,6 +110,47 @@ sub detailed_help {
 # ------------------------------
 # PURE FUNCTIONS --- no terminal I/O, testable in isolation
 # ------------------------------
+
+# Detect compression format ('gzip', 'zstd', or undef) from initial bytes or filename.
+sub detect_compression {
+    my ($header_bytes, $filename) = @_;
+    $header_bytes //= '';
+    if (length($header_bytes) >= 2 && substr($header_bytes, 0, 2) eq "\x1f\x8b") {
+        return 'gzip';
+    }
+    if (length($header_bytes) >= 4 && substr($header_bytes, 0, 4) eq "\x28\xb5\x2f\xfd") {
+        return 'zstd';
+    }
+    if (defined $filename) {
+        return 'gzip' if $filename =~ /\.gz$/i;
+        return 'zstd' if $filename =~ /\.(?:zst|zstd)$/i;
+    }
+    return undef;
+}
+
+# Return the command list to run for decompression.
+sub get_decompressor_command {
+    my ($format, $filename) = @_;
+    return () unless defined $format;
+    my $prog = ($format eq 'gzip') ? 'gzip' : ($format eq 'zstd') ? 'zstd' : undef;
+    return () unless defined $prog;
+    if (defined $filename) {
+        return ($prog, '-dc', '--', $filename);
+    } else {
+        return ($prog, '-dc');
+    }
+}
+
+# Check if a command is executable in PATH.
+sub command_in_path {
+    my ($cmd) = @_;
+    return 0 unless defined $cmd && length($cmd);
+    for my $dir (split(/:/, $ENV{PATH} // '')) {
+        my $p = "$dir/$cmd";
+        return 1 if -f $p && -x $p;
+    }
+    return 0;
+}
 
 # Parse a single CSV line according to RFC 4180 rules.
 # $line          : string containing CSV line
@@ -924,16 +965,89 @@ sub _main {
     if (!-t STDIN) {
         # Data arrives on STDIN (pipe); reopen STDIN from /dev/tty for keyboard.
         $filename = '<stdin>';
+        binmode(STDIN);
+        my $magic = '';
+        my $n = sysread(STDIN, $magic, 4);
+        my $fmt = ($n && $n >= 2) ? detect_compression($magic, undef) : undef;
+
+        my ($data_fh, $child_pid, $feeder_pid);
+        my @pending_first;
+
+        if ($fmt) {
+            my $prog = ($fmt eq 'gzip') ? 'gzip' : 'zstd';
+            if (!command_in_path($prog)) {
+                print STDERR "dless: cannot decompress $fmt stream: '$prog' command not found in PATH\n";
+                exit 1;
+            }
+            my @cmd = get_decompressor_command($fmt);
+
+            pipe(my $feed_r, my $feed_w) or die "dless: pipe failed: $!\n";
+            pipe(my $out_r,  my $out_w)  or die "dless: pipe failed: $!\n";
+
+            $child_pid = fork();
+            die "dless: fork failed: $!\n" unless defined $child_pid;
+            if ($child_pid == 0) {
+                close $feed_w;
+                close $out_r;
+                open(STDIN, '<&', $feed_r)  or exit 127;
+                open(STDOUT, '>&', $out_w) or exit 127;
+                close $feed_r;
+                close $out_w;
+                exec(@cmd) or exit 127;
+            }
+            close $feed_r;
+
+            $feeder_pid = fork();
+            die "dless: fork failed: $!\n" unless defined $feeder_pid;
+            if ($feeder_pid == 0) {
+                close $out_r;
+                close $out_w;
+                syswrite($feed_w, $magic) if length($magic);
+                while (my $read_bytes = sysread(STDIN, my $buf, 65536)) {
+                    my $offset = 0;
+                    while ($offset < $read_bytes) {
+                        my $w = syswrite($feed_w, $buf, $read_bytes - $offset, $offset);
+                        last unless $w;
+                        $offset += $w;
+                    }
+                }
+                close $feed_w;
+                exit 0;
+            }
+            close $feed_w;
+            close $out_w;
+            $data_fh = $out_r;
+        } else {
+            $data_fh = \*STDIN;
+            if (length($magic)) {
+                my $rest_of_first = <STDIN>;
+                my $full_first = $magic . ($rest_of_first // '');
+                push @pending_first, $full_first;
+            }
+        }
+
+        my $get_next = sub {
+            return shift @pending_first if @pending_first;
+            return scalar <$data_fh>;
+        };
+
         if ($opt_csv) {
-            while (my $line = <STDIN>) {
-                push @all_rows, parse_csv_line($line, sub { scalar <STDIN> });
+            while (my $line = $get_next->()) {
+                push @all_rows, parse_csv_line($line, $get_next);
             }
         } else {
-            while (my $line = <STDIN>) {
+            while (my $line = $get_next->()) {
                 chomp $line;
                 push @all_rows, [split /\Q$opt_delim\E/, $line, -1];
             }
         }
+
+        if ($fmt) {
+            close $data_fh;
+            waitpid($child_pid, 0) if defined $child_pid;
+            waitpid($feeder_pid, 0) if defined $feeder_pid;
+        }
+
         # Reopen STDIN for keyboard input.
         # Try /dev/tty first; if that fails (e.g. Device not configured in subshell pipelines),
         # fallback to the actual tty device path of STDOUT or STDERR.
@@ -947,7 +1061,25 @@ sub _main {
         die "dless: Cannot open terminal for interactive input: $!\n" unless $reopened;
     } elsif (@ARGV) {
         $filename = $ARGV[0];
-        open(my $fh, '<', $filename) or die "dless: Cannot open '$filename': $!\n";
+        open(my $probe_fh, '<:raw', $filename) or die "dless: Cannot open '$filename': $!\n";
+        my $magic = '';
+        read($probe_fh, $magic, 4);
+        close $probe_fh;
+
+        my $fmt = detect_compression($magic, $filename);
+        my $fh;
+        if ($fmt) {
+            my $prog = ($fmt eq 'gzip') ? 'gzip' : 'zstd';
+            if (!command_in_path($prog)) {
+                print STDERR "dless: cannot decompress $fmt file: '$prog' command not found in PATH\n";
+                exit 1;
+            }
+            my @cmd = get_decompressor_command($fmt, $filename);
+            open($fh, '-|', @cmd) or die "dless: Cannot run @cmd: $!\n";
+        } else {
+            open($fh, '<', $filename) or die "dless: Cannot open '$filename': $!\n";
+        }
+
         if ($opt_csv) {
             while (my $line = <$fh>) {
                 push @all_rows, parse_csv_line($line, sub { scalar <$fh> });
