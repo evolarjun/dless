@@ -11,7 +11,7 @@
 
 use strict;
 use warnings;
-use Getopt::Long qw(:config no_auto_abbrev no_ignore_case);
+use Getopt::Long qw(GetOptionsFromArray :config no_auto_abbrev no_ignore_case);
 use Term::ReadKey;
 use List::Util qw(min max);
 use POSIX qw(ttyname);
@@ -83,7 +83,7 @@ Column & Display Commands:
   1                 Toggle 1-based column numbers above headers
   0                 Toggle 0-based column numbers above headers
   w                 Adjust column widths (prompts for column specifiers):
-                      <empty>  Reset all columns to original full widths
+                      <empty>  Toggle all columns between header and full widths
                       N Toggle column N between header width and full width
                       N:W      Set column N to width W
                       N:0, N-  Hide column N entirely (rendered as '|')
@@ -110,6 +110,70 @@ sub detailed_help {
 # ------------------------------
 # PURE FUNCTIONS --- no terminal I/O, testable in isolation
 # ------------------------------
+
+# Safely compile a regular expression string.
+# Returns ($compiled_regex, $error_message).
+# If $pattern is undef or empty, returns (undef, undef).
+# On compilation failure, returns (undef, "Invalid regex: $pattern").
+sub compile_regex {
+    my ($pattern) = @_;
+    return (undef, undef) unless defined $pattern && length($pattern);
+    my $compiled;
+    eval {
+        local $SIG{__DIE__} = sub {};
+        $compiled = qr/$pattern/;
+    };
+    if ($@ || !$compiled) {
+        return (undef, "Invalid regex: $pattern");
+    }
+    return ($compiled, undef);
+}
+
+# Parse command-line options from an argument list.
+# Returns ($opts, $error_msg) where $opts is a hashref:
+#   delimiter    => string (default: "\t")
+#   csv          => 0 or 1
+#   line_numbers => 0 or 1
+#   help         => 0 or 1
+#   files        => arrayref of remaining arguments
+# On error, returns (undef, $error_msg).
+sub parse_cli_args {
+    my (@args) = @_;
+    my ($delim, $csv, $help, $numbers);
+    $numbers = 0;
+    $help    = 0;
+    my $warn = '';
+    my $ok;
+    {
+        local $SIG{__WARN__} = sub { $warn .= shift };
+        $ok = GetOptionsFromArray(
+            \@args,
+            'd|delimiter=s' => \$delim,
+            'c|csv'         => \$csv,
+            'N|numbers!'    => \$numbers,
+            'help|h'        => \$help,
+        );
+    }
+    if (!$ok) {
+        $warn =~ s/\s+$//;
+        return (undef, $warn || 'Invalid options');
+    }
+    if ($csv && defined $delim) {
+        return (undef, 'Cannot specify both --csv and --delimiter');
+    }
+    if ($csv) {
+        $delim = ',';
+    } else {
+        $delim //= "\t";
+    }
+    return ({
+        delimiter    => $delim,
+        csv          => $csv ? 1 : 0,
+        line_numbers => $numbers ? 1 : 0,
+        help         => $help ? 1 : 0,
+        files        => \@args,
+    }, undef);
+}
 
 # Detect compression format ('gzip', 'zstd', or undef) from initial bytes or filename.
 sub detect_compression {
@@ -570,6 +634,59 @@ sub build_colnum_line {
     return $line;
 }
 
+# Determine which columns overlap the horizontal viewport [h_offset, h_offset + width - 1].
+# $col_widths_ref : arrayref of column widths
+# $is_hidden_ref  : arrayref of column hidden flags
+# $h_offset       : horizontal scroll offset
+# $width          : viewport width (content area)
+# Returns hashref of { col_idx => 1 } for all visible columns.
+sub get_visible_column_indices {
+    my ($col_widths_ref, $is_hidden_ref, $h_offset, $width) = @_;
+    $h_offset //= 0;
+    $width    //= 80;
+    my %vis_cols;
+    my $curr_pos = 0;
+    for my $ci (0 .. $#$col_widths_ref) {
+        my $col_w      = $col_widths_ref->[$ci];
+        my $cell_start = $curr_pos;
+        my $cell_end   = $curr_pos + $col_w - 1;
+
+        my $v_start = max($cell_start, $h_offset);
+        my $v_end   = min($cell_end, $h_offset + $width - 1);
+
+        if ($v_start <= $v_end) {
+            $vis_cols{$ci} = 1;
+        }
+
+        $curr_pos += $col_w;
+        if ($ci < $#$col_widths_ref) {
+            my $is_hidden   = ($is_hidden_ref && $is_hidden_ref->[$ci]);
+            my $next_hidden = ($is_hidden_ref && $is_hidden_ref->[$ci + 1]);
+            $curr_pos++ unless ($is_hidden && $next_hidden);
+        }
+    }
+    return \%vis_cols;
+}
+
+# Compute maximum field length for each column across the specified visible rows.
+# $data_ref               : arrayref of data row arrayrefs
+# $visible_row_indices_ref: arrayref of row indices in $data_ref
+# $n_cols                 : number of columns
+# Returns arrayref of max field lengths for each column.
+sub get_visible_field_max_widths {
+    my ($data_ref, $visible_row_indices_ref, $n_cols) = @_;
+    my @max_widths = (0) x $n_cols;
+    for my $ri (@$visible_row_indices_ref) {
+        my $row = $data_ref->[$ri];
+        for my $ci (0 .. $n_cols - 1) {
+            my $val = ($ci < @$row && defined $row->[$ci]) ? $row->[$ci] : '';
+            my $len = length($val);
+            $max_widths[$ci] = $len if $len > $max_widths[$ci];
+        }
+    }
+    return \@max_widths;
+}
+
 # Adjust column widths based on user input string.
 # $orig_widths_ref : arrayref of original full column widths
 # $curr_widths_ref : arrayref of current column widths (modified in-place)
@@ -577,19 +694,47 @@ sub build_colnum_line {
 # $header_ref      : arrayref of header strings
 # $input           : user input string ('', '<col>', '<col>:<width>', '<col>:0', '<col>-', or multiple separated by space)
 # $n_cols          : number of columns
+# $vis_cols_ref    : optional hashref of visible column indices { col_idx => 1 }
+# $vis_max_w_ref   : optional arrayref of visible field max widths
 # Returns ($success, $status_message)
 sub adjust_column_widths {
-    my ($orig_widths_ref, $curr_widths_ref, $is_hidden_ref, $header_ref, $input, $n_cols) = @_;
+    my ($orig_widths_ref, $curr_widths_ref, $is_hidden_ref, $header_ref, $input, $n_cols, $vis_cols_ref, $vis_max_w_ref) = @_;
     $input //= '';
     $input =~ s/^\s+|\s+$//g;
 
-    # 1. Empty input resets all columns to original widths
+    # 1. Empty input toggles all columns between full width and header width
     if ($input eq '') {
+        # Check if all columns are currently at full width and unhidden
+        my $all_full = 1;
         for my $i (0 .. $n_cols - 1) {
-            $curr_widths_ref->[$i] = $orig_widths_ref->[$i];
-            $is_hidden_ref->[$i]   = 0;
+            if ($curr_widths_ref->[$i] != $orig_widths_ref->[$i] || $is_hidden_ref->[$i]) {
+                $all_full = 0;
+                last;
+            }
         }
-        return (1, "Reset all columns to original widths");
+
+        # Expand default full widths from visible fields
+        for my $i (0 .. $n_cols - 1) {
+            if ($vis_cols_ref && $vis_cols_ref->{$i} && defined $vis_max_w_ref) {
+                my $vw = $vis_max_w_ref->[$i] // 0;
+                $orig_widths_ref->[$i] = $vw if $vw > $orig_widths_ref->[$i];
+            }
+        }
+
+        if ($all_full) {
+            for my $i (0 .. $n_cols - 1) {
+                my $hw = length($header_ref->[$i] // '');
+                $curr_widths_ref->[$i] = max(1, $hw);
+                $is_hidden_ref->[$i]   = 0;
+            }
+            return (1, "Shrunk all columns to header width");
+        } else {
+            for my $i (0 .. $n_cols - 1) {
+                $curr_widths_ref->[$i] = $orig_widths_ref->[$i];
+                $is_hidden_ref->[$i]   = 0;
+            }
+            return (1, "Reset all columns to original widths");
+        }
     }
 
     my @tokens = split(/\s+/, $input);
@@ -626,8 +771,12 @@ sub adjust_column_widths {
         } elsif ($tok =~ /^(\d+)$/) {
             my $col_num = $1;
             my $ci = $col_num - 1;
-            # If already modified (width != orig or hidden == 1), restore to orig
-            if ($curr_widths_ref->[$ci] != $orig_widths_ref->[$ci] || $is_hidden_ref->[$ci]) {
+            my $vw = ($vis_cols_ref && $vis_cols_ref->{$ci} && defined $vis_max_w_ref) ? ($vis_max_w_ref->[$ci] // 0) : 0;
+            if ($vw > $orig_widths_ref->[$ci]) {
+                $orig_widths_ref->[$ci] = $vw;
+                $curr_widths_ref->[$ci] = $vw;
+                $is_hidden_ref->[$ci]   = 0;
+            } elsif ($curr_widths_ref->[$ci] != $orig_widths_ref->[$ci] || $is_hidden_ref->[$ci]) {
                 $curr_widths_ref->[$ci] = $orig_widths_ref->[$ci];
                 $is_hidden_ref->[$ci]   = 0;
             } else {
@@ -959,26 +1108,21 @@ sub _main {
     $| = 1;  # autoflush STDOUT so every frame/status line prints immediately
 
     # ------ Argument parsing ------------------------------
-    my ($opt_delim, $opt_csv, $opt_help, $opt_line_nums);
-    $opt_line_nums = 0;
-    $opt_help      = 0;
-    GetOptions(
-        'd|delimiter=s' => \$opt_delim,
-        'c|csv'         => \$opt_csv,
-        'N|numbers!'    => \$opt_line_nums,
-        'help|h'        => \$opt_help,
-    ) or usage();
-    detailed_help() if $opt_help;
-
-    if ($opt_csv && defined $opt_delim) {
-        print STDERR "dless: Cannot specify both --csv and --delimiter\n";
+    my ($opts, $err) = parse_cli_args(@ARGV);
+    if ($err) {
+        if ($err =~ /^Unknown option:/ || $err =~ /^Option /) {
+            print STDERR "$err\n";
+        } else {
+            print STDERR "dless: $err\n";
+        }
         usage();
     }
-    if ($opt_csv) {
-        $opt_delim = ',';
-    } else {
-        $opt_delim //= "\t";
-    }
+    detailed_help() if $opts->{help};
+
+    my $opt_delim     = $opts->{delimiter};
+    my $opt_csv       = $opts->{csv};
+    my $opt_line_nums = $opts->{line_numbers};
+    @ARGV             = @{ $opts->{files} };
 
     # ------ Load data ------------------------------
     my ($filename, @all_rows);
@@ -1210,13 +1354,9 @@ sub _main {
             return;
         }
 
-        my $compiled;
-        eval {
-            local $SIG{__DIE__} = sub {};
-            $compiled = qr/$pattern/;
-        };
-        if ($@ || !$compiled) {
-            $status_msg       = "Invalid regex: $pattern";
+        my ($compiled, $err) = compile_regex($pattern);
+        if ($err || !$compiled) {
+            $status_msg       = $err // "Invalid regex: $pattern";
             $search_regex     = undef;
             @search_matches   = ();
             $search_match_idx = undef;
@@ -1488,17 +1628,13 @@ sub _main {
                     $execute_search->($query);
                 } elsif ($mode eq '&') {
                     $status_msg = undef;
-                    if (!defined $query || $query eq '') {
+                    if (!length $query) {
                         $filter_regex        = undef;
                         $visible_indices_ref = filter_rows(\@data, undef, $opt_delim);
                     } else {
-                        my $compiled;
-                        eval {
-                            local $SIG{__DIE__} = sub {};
-                            $compiled = qr/$query/;
-                        };
-                        if ($@ || !$compiled) {
-                            $status_msg = "Invalid regex: $query";
+                        my ($compiled, $err) = compile_regex($query);
+                        if ($err || !$compiled) {
+                            $status_msg = $err // "Invalid regex: $query";
                         } else {
                             $filter_regex        = $compiled;
                             $visible_indices_ref = filter_rows(\@data, $filter_regex, $opt_delim);
@@ -1513,13 +1649,28 @@ sub _main {
                     $show_col_nums = $saved_show_col_nums;
                     $col_base_idx  = $saved_col_base_idx;
                     $status_msg    = undef;
+
+                    my $ln_len       = $show_line_nums ? (length($n_rows) + 1) : 0;
+                    my $content_w    = max(1, $term_cols - $ln_len);
+                    my $vis_cols_ref = get_visible_column_indices($col_widths_ref, $is_hidden_ref, $h_offset, $content_w);
+
+                    my $vdr           = $visible_data_rows->();
+                    my $total_vis_idx = scalar @$visible_indices_ref;
+                    my @vis_row_indices;
+                    for my $i ($v_offset .. min($v_offset + $vdr - 1, $total_vis_idx - 1)) {
+                        push @vis_row_indices, $visible_indices_ref->[$i];
+                    }
+                    my $vis_max_w_ref = get_visible_field_max_widths(\@data, \@vis_row_indices, $n_cols);
+
                     my ($ok, $msg) = adjust_column_widths(
                         $orig_col_widths_ref,
                         $col_widths_ref,
                         $is_hidden_ref,
                         $header,
                         $query,
-                        $n_cols
+                        $n_cols,
+                        $vis_cols_ref,
+                        $vis_max_w_ref
                     );
                     if (!$ok) {
                         $status_msg = $msg;

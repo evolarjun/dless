@@ -715,16 +715,40 @@ subtest 'parse_csv_line --- unclosed quote at EOF' => sub {
 # adjust_column_widths & hidden column rendering Tests
 # ------------------------------
 
-subtest 'adjust_column_widths --- empty resets all columns' => sub {
+subtest 'adjust_column_widths --- empty toggles all columns' => sub {
     my $orig   = [10, 20, 30];
     my $curr   = [5, 1, 10];
     my $hidden = [0, 1, 0];
     my $header = ['name', 'age', 'score'];
 
-    my ($ok, $msg) = adjust_column_widths($orig, $curr, $hidden, $header, '', 3);
-    ok($ok, 'empty input succeeds');
+    # 1. When not at full width, empty input restores all columns
+    my ($ok1, $msg1) = adjust_column_widths($orig, $curr, $hidden, $header, '', 3);
+    ok($ok1, 'empty input succeeds when restoring');
     is_deeply($curr, [10, 20, 30], 'all column widths restored');
     is_deeply($hidden, [0, 0, 0], 'all hidden flags cleared');
+    like($msg1, qr/Reset all columns to original widths/i, 'restore message returned');
+
+    # 2. When all columns are at full width, empty input shrinks all to header width
+    my ($ok2, $msg2) = adjust_column_widths($orig, $curr, $hidden, $header, '', 3);
+    ok($ok2, 'empty input succeeds when shrinking all to header');
+    is_deeply($curr, [4, 3, 5], 'all column widths shrunk to header length');
+    is_deeply($hidden, [0, 0, 0], 'hidden flags remain cleared');
+    like($msg2, qr/Shrunk all columns to header width/i, 'shrink message returned');
+
+    # 3. Subsequent empty input restores back to full width
+    my ($ok3, $msg3) = adjust_column_widths($orig, $curr, $hidden, $header, '', 3);
+    ok($ok3, 'subsequent empty input succeeds');
+    is_deeply($curr, [10, 20, 30], 'all column widths restored to full width');
+    is_deeply($hidden, [0, 0, 0], 'hidden flags cleared');
+    like($msg3, qr/Reset all columns to original widths/i, 'restore message returned');
+
+    # 4. Header with empty string gets minimum width 1
+    my $empty_h = ['', 'a', 'xyz'];
+    my $curr_h  = [10, 10, 10];
+    my $orig_h  = [10, 10, 10];
+    my $hid_h   = [0, 0, 0];
+    adjust_column_widths($orig_h, $curr_h, $hid_h, $empty_h, '', 3);
+    is_deeply($curr_h, [1, 1, 3], 'empty header column gets minimum width 1');
 };
 
 subtest 'adjust_column_widths --- shrink to header length and toggle' => sub {
@@ -954,6 +978,9 @@ subtest 'detect_compression pure function' => sub {
     # Magic bytes check
     is(detect_compression("\x1f\x8b\x08\x00"), 'gzip', 'detects gzip from magic bytes');
     is(detect_compression("\x28\xb5\x2f\xfd"), 'zstd', 'detects zstd from magic bytes');
+    is(detect_compression("\x1f"), undef, 'incomplete 1-byte gzip magic returns undef');
+    is(detect_compression("\x28\xb5\x2f"), undef, 'incomplete 3-byte zstd magic returns undef');
+    is(detect_compression("\x00\x01\x02\x03"), undef, 'non-magic 4 bytes returns undef');
 
     # Filename extension fallback
     is(detect_compression("data", "data.tsv.gz"), 'gzip', 'detects gzip from .gz extension');
@@ -963,6 +990,7 @@ subtest 'detect_compression pure function' => sub {
     # Uncompressed / plain text
     is(detect_compression("name\tage\n", "basic.tsv"), undef, 'plain text returns undef');
     is(detect_compression(""), undef, 'empty header returns undef');
+    is(detect_compression(undef), undef, 'undef header returns undef');
 };
 
 subtest 'get_decompressor_command pure function' => sub {
@@ -997,4 +1025,208 @@ subtest 'start_search_status_msg pure function' => sub {
     is(start_search_status_msg(undef, 'Alice'), undef, 'undef mode returns undef');
 };
 
+subtest 'get_visible_column_indices pure function' => sub {
+    my $col_widths = [10, 20, 15];
+    my $is_hidden  = [0, 0, 0];
+
+    # Viewport 0..24: Col 0 (0..9) and Col 1 (11..30) overlap
+    my $vis1 = get_visible_column_indices($col_widths, $is_hidden, 0, 25);
+    is_deeply($vis1, { 0 => 1, 1 => 1 }, 'cols 0 and 1 visible in 25-char viewport at offset 0');
+
+    # Viewport 15..24: only Col 1 (11..30) overlaps
+    my $vis2 = get_visible_column_indices($col_widths, $is_hidden, 15, 10);
+    is_deeply($vis2, { 1 => 1 }, 'only col 1 visible at offset 15 with width 10');
+
+    # Viewport 32..50: only Col 2 (32..46) overlaps
+    my $vis3 = get_visible_column_indices($col_widths, $is_hidden, 32, 20);
+    is_deeply($vis3, { 2 => 1 }, 'only col 2 visible at offset 32 with width 20');
+
+    # Hidden columns without separators between adjacent hidden
+    my $col_widths_h = [10, 1, 1, 10];
+    my $is_hidden_h  = [0, 1, 1, 0];
+    # Col 0: 0..9, Sep: 10, Col 1: 11..11, Col 2: 12..12, Sep: 13, Col 3: 14..23
+    my $vis4 = get_visible_column_indices($col_widths_h, $is_hidden_h, 14, 5);
+    is_deeply($vis4, { 3 => 1 }, 'col 3 correctly located after adjacent hidden columns');
+};
+
+subtest 'get_visible_field_max_widths pure function' => sub {
+    my $data = [
+        ['Alice', 'Engineering and Architecture', '99.5'],
+        ['Bob',   'Sales',                         '72.0'],
+        ['Carol', 'Human Resources Operations',    '88.3'],
+    ];
+    # Visible rows 0 and 1
+    my $w1 = get_visible_field_max_widths($data, [0, 1], 3);
+    is_deeply($w1, [5, 28, 4], 'max widths across rows 0 and 1');
+
+    # Visible row 1 only
+    my $w2 = get_visible_field_max_widths($data, [1], 3);
+    is_deeply($w2, [3, 5, 4], 'max widths for row 1');
+
+    # Empty visible rows
+    my $w3 = get_visible_field_max_widths($data, [], 3);
+    is_deeply($w3, [0, 0, 0], 'empty visible rows returns zeroes');
+};
+
+subtest 'adjust_column_widths --- expand to visible fields' => sub {
+    my $orig_widths = [10, 10, 10];
+    my $curr_widths = [10, 10, 10];
+    my $is_hidden   = [0, 0, 0];
+    my $header      = ['name', 'dept', 'score'];
+
+    # Visible cols: 0 and 1. Visible max widths: col 0 has 5, col 1 has 30, col 2 has 40 (col 2 not visible)
+    my $vis_cols   = { 0 => 1, 1 => 1 };
+    my $vis_max_w  = [5, 30, 40];
+
+    # 1. Empty input expands visible col 1 orig_width to 30, and since all were at full width, shrinks all to header width
+    my ($ok, $msg) = adjust_column_widths(
+        $orig_widths, $curr_widths, $is_hidden, $header,
+        '', 3, $vis_cols, $vis_max_w
+    );
+    is($ok, 1, 'empty input succeeds');
+    is($orig_widths->[0], 10, 'col 0 default width unchanged (visible field smaller than default)');
+    is($orig_widths->[1], 30, 'col 1 default width expanded to 30');
+    is($orig_widths->[2], 10, 'col 2 default width unchanged (not visible)');
+    is_deeply($curr_widths, [4, 4, 5], 'all columns shrunk to header widths');
+
+    # 1b. Next empty input restores all columns to expanded full widths
+    adjust_column_widths($orig_widths, $curr_widths, $is_hidden, $header, '', 3, $vis_cols, $vis_max_w);
+    is_deeply($curr_widths, [10, 30, 10], 'all columns restored to expanded full widths');
+
+    # 2. 'w 1' on designated col 1 (which now has orig=30, curr=30): toggles to header length
+    my $orig2 = [10, 20, 10];
+    my $curr2 = [10, 20, 10];
+    my $hid2  = [0, 0, 0];
+    # Col 1 has visible field 35 (> 20)
+    my ($ok2) = adjust_column_widths(
+        $orig2, $curr2, $hid2, $header,
+        '2', 3, { 1 => 1 }, [0, 35, 0]
+    );
+    is($orig2->[1], 35, 'w 2 expands col 2 orig_width to 35');
+    is($curr2->[1], 35, 'w 2 expands col 2 curr_width to 35');
+
+    # Subsequent 'w 2' toggles down to header length (4 for 'dept')
+    my ($ok3) = adjust_column_widths(
+        $orig2, $curr2, $hid2, $header,
+        '2', 3, { 1 => 1 }, [0, 35, 0]
+    );
+    is($orig2->[1], 35, 'orig_width remains 35 after toggling down');
+    is($curr2->[1], 4,  'curr_width toggled down to header length 4');
+
+    # 3. Explicit width '2:15' does not alter orig_width
+    my ($ok4) = adjust_column_widths(
+        $orig2, $curr2, $hid2, $header,
+        '2:15', 3, { 1 => 1 }, [0, 35, 0]
+    );
+    is($orig2->[1], 35, 'orig_width remains 35 when explicit width specified');
+    is($curr2->[1], 15, 'curr_width set to explicit width 15');
+};
+
+subtest 'compile_regex pure function' => sub {
+    # Valid patterns
+    my ($qr1, $err1) = compile_regex('Alice');
+    ok(defined $qr1, 'valid regex returns compiled regex');
+    is($err1, undef, 'valid regex returns undef error');
+    ok('Alice' =~ $qr1, 'compiled regex matches string');
+    ok('Bob' !~ $qr1, 'compiled regex does not match non-matching string');
+
+    my ($qr2, $err2) = compile_regex('^\d+\s+\w+$');
+    ok(defined $qr2, 'valid complex regex compiles');
+    is($err2, undef, 'valid complex regex returns undef error');
+    ok('123 abc' =~ $qr2, 'complex regex matches expected pattern');
+
+    # Invalid patterns
+    my ($qr3, $err3) = compile_regex('[');
+    is($qr3, undef, 'unclosed bracket regex returns undef regex');
+    is($err3, 'Invalid regex: [', 'unclosed bracket returns formatted error message');
+
+    my ($qr4, $err4) = compile_regex('(?');
+    is($qr4, undef, 'incomplete group regex returns undef regex');
+    is($err4, 'Invalid regex: (?', 'incomplete group returns formatted error message');
+
+    my ($qr5, $err5) = compile_regex('+');
+    is($qr5, undef, 'dangling quantifier regex returns undef regex');
+    is($err5, 'Invalid regex: +', 'dangling quantifier returns formatted error message');
+
+    # Empty and undef
+    my ($qr6, $err6) = compile_regex('');
+    is($qr6, undef, 'empty string returns undef regex');
+    is($err6, undef, 'empty string returns undef error');
+
+    my ($qr7, $err7) = compile_regex(undef);
+    is($qr7, undef, 'undef returns undef regex');
+    is($err7, undef, 'undef returns undef error');
+};
+
+subtest 'parse_cli_args pure function' => sub {
+    # Default options
+    my ($opts0, $err0) = parse_cli_args();
+    is($err0, undef, 'no args returns no error');
+    is($opts0->{delimiter}, "\t", 'default delimiter is tab');
+    is($opts0->{csv}, 0, 'default csv mode is 0');
+    is($opts0->{line_numbers}, 0, 'default line numbers is 0');
+    is($opts0->{help}, 0, 'default help is 0');
+    is_deeply($opts0->{files}, [], 'default files list is empty');
+
+    # Delimiter flag -d and --delimiter
+    my ($opts1, $err1) = parse_cli_args('-d', ',');
+    is($err1, undef, '-d parsed without error');
+    is($opts1->{delimiter}, ',', '-d sets delimiter to comma');
+
+    my ($opts2, $err2) = parse_cli_args('--delimiter', '|');
+    is($err2, undef, '--delimiter parsed without error');
+    is($opts2->{delimiter}, '|', '--delimiter sets delimiter');
+
+    # CSV flags -c and --csv
+    my ($opts3, $err3) = parse_cli_args('-c');
+    is($err3, undef, '-c parsed without error');
+    is($opts3->{csv}, 1, '-c sets csv to 1');
+    is($opts3->{delimiter}, ',', '-c defaults delimiter to comma');
+
+    my ($opts4, $err4) = parse_cli_args('--csv');
+    is($err4, undef, '--csv parsed without error');
+    is($opts4->{csv}, 1, '--csv sets csv to 1');
+    is($opts4->{delimiter}, ',', '--csv defaults delimiter to comma');
+
+    # Line numbers flag -N and --numbers
+    my ($opts5, $err5) = parse_cli_args('-N');
+    is($err5, undef, '-N parsed without error');
+    is($opts5->{line_numbers}, 1, '-N sets line_numbers to 1');
+
+    my ($opts6, $err6) = parse_cli_args('--numbers');
+    is($err6, undef, '--numbers parsed without error');
+    is($opts6->{line_numbers}, 1, '--numbers sets line_numbers to 1');
+
+    # Help flags -h and --help
+    my ($opts7, $err7) = parse_cli_args('-h');
+    is($err7, undef, '-h parsed without error');
+    is($opts7->{help}, 1, '-h sets help to 1');
+
+    my ($opts8, $err8) = parse_cli_args('--help');
+    is($err8, undef, '--help parsed without error');
+    is($opts8->{help}, 1, '--help sets help to 1');
+
+    # File arguments preserved
+    my ($opts9, $err9) = parse_cli_args('-d', ':', 'foo.tsv', 'bar.tsv');
+    is($err9, undef, 'args with files parsed without error');
+    is($opts9->{delimiter}, ':', 'delimiter option parsed correctly');
+    is_deeply($opts9->{files}, ['foo.tsv', 'bar.tsv'], 'remaining args preserved in files');
+
+    # Unknown option -n rejected
+    my ($opts10, $err10) = parse_cli_args('-n');
+    is($opts10, undef, 'unknown option -n returns undef opts');
+    like($err10, qr/Unknown option:\s*n/i, 'unknown option -n error message returned');
+
+    # Conflicting --csv and -d
+    my ($opts11, $err11) = parse_cli_args('--csv', '-d', ',');
+    is($opts11, undef, 'conflicting options return undef opts');
+    like($err11, qr/Cannot specify both --csv and --delimiter/i, 'conflict error message returned');
+
+    # Missing option argument
+    my ($opts12, $err12) = parse_cli_args('-d');
+    is($opts12, undef, 'missing delimiter argument returns undef opts');
+    like($err12, qr/Option d requires an argument/i, 'missing argument error message returned');
+};
+
 done_testing();
+

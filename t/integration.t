@@ -6,7 +6,7 @@ use FindBin qw($Bin);
 use POSIX qw(SIGTERM);
 
 # ------ Helpers ------------------------------
-my $dless      = "$Bin/../dless";
+my $dless    = "$Bin/../dless";
 my $fixtures = "$Bin/fixtures";
 my $SESSION  = "dless_test_$$";  # unique session name per test run
 
@@ -22,7 +22,6 @@ my $current_height = 24;
 my @current_keys   = ();
 
 # Launch dless in a tmux pane of fixed size and return the session name.
-# Returns session name (same as $SESSION) on success.
 sub launch {
     my (%opts) = @_;
     my $cmd     = $opts{cmd}    // "$dless $fixtures/basic.tsv";
@@ -82,862 +81,138 @@ sub teardown {
     }
 }
 
-# ------------------------------
-# Tests
-# ------------------------------
-
-subtest 'column numbers hidden by default' => sub {
+# ------------------------------------------------------------
+# Suite 1: Initial Display & Status Bar
+# ------------------------------------------------------------
+subtest 'initial display and status bar' => sub {
     launch();
     my $screen = capture();
     unlike($screen, qr/1\s+2\s+3/, 'column numbers not visible on initial render');
-    teardown(keep_alive => 1);
-};
-
-subtest 'header row appears' => sub {
-    launch(reuse => 1);
-    my $screen = capture();
     like($screen, qr/name/, 'header "name" is visible');
     like($screen, qr/age/,  'header "age" is visible');
     like($screen, qr/score/,'header "score" is visible');
-    teardown(keep_alive => 1);
-};
-
-subtest 'data rows appear' => sub {
-    launch(reuse => 1);
-    my $screen = capture();
     like($screen, qr/Alice/, 'first data row visible');
     like($screen, qr/Bob/,   'second data row visible');
-    teardown(keep_alive => 1);
-};
-
-subtest 'status bar shows filename and row info' => sub {
-    launch(reuse => 1);
-    my $screen = capture();
     like($screen, qr/dless\/t\//, 'status bar shows path containing dless/t/');
     like($screen, qr/Rows\s+\d+-\d+\s+of\s+\d+/, 'status bar shows row range');
     like($screen, qr/Col offset:\s*0/, 'status bar shows horizontal offset = 0');
     teardown();
 };
 
-subtest 'vertical scroll --- down one row' => sub {
-    launch(height => 7);
-    my $before = capture();
-    like($before, qr/Alice/, 'Alice visible before scroll');
+# ------------------------------------------------------------
+# Suite 2: Help Overlay & Lifecycle
+# ------------------------------------------------------------
+subtest 'help overlay and lifecycle' => sub {
+    launch();
 
-    send_keys('Down');
+    # '?' opens help
+    send_keys('?');
+    my $q_help = capture();
+    like($q_help, qr/KEYBINDINGS/, 'help overlay shows KEYBINDINGS on ?');
+    like($q_help, qr/Quit/,        'help overlay shows Quit binding on ?');
+    send_keys('Escape');
 
-    my $after = capture();
-    unlike($after, qr/\bAlice\b/, 'Alice no longer in top data row after scroll');
-    like($after,   qr/Bob/,       'Bob still visible after one scroll');
-    send_keys('Home');
-    teardown(keep_alive => 1);
+    # 'h' opens help
+    send_keys('h');
+    my $h_help = capture();
+    like($h_help, qr/KEYBINDINGS/, 'help overlay shows KEYBINDINGS on h');
+    like($h_help, qr/Quit/,        'help overlay shows Quit binding on h');
+    like($h_help, qr/C-b/,         'help overlay shows C-b binding');
+    like($h_help, qr/&/,           'help overlay shows & binding');
+
+    # Dismiss with any key (e.g. 'x')
+    send_keys('x');
+    my $alive = system("$tmux has-session -t $SESSION 2>/dev/null");
+    is($alive, 0, 'session still alive after dismissing help with x');
+
+    # 'q' quits viewer
+    send_keys('q');
+    select(undef, undef, undef, 0.1);
+    my $after_q = system("$tmux has-session -t $SESSION 2>/dev/null");
+    isnt($after_q, 0, 'session no longer exists after q');
+
+    teardown();
 };
 
-subtest 'vertical scroll --- j and k keys' => sub {
-    launch(height => 7, reuse => 1);
+# ------------------------------------------------------------
+# Suite 3: Vertical Navigation & Scrolling
+# ------------------------------------------------------------
+subtest 'vertical navigation and scrolling' => sub {
+    launch(height => 7);
+
+    # Down one row
     my $before = capture();
     like($before, qr/Alice/, 'Alice visible before scroll');
+    send_keys('Down');
+    my $after_down = capture();
+    unlike($after_down, qr/\bAlice\b/, 'Alice no longer in top data row after scroll');
+    like($after_down,   qr/Bob/,       'Bob still visible after one scroll');
 
-    # 'j' scrolls down one row
+    # j and k keys
+    send_keys('Home');
     send_keys('j');
     my $after_j = capture();
     unlike($after_j, qr/\bAlice\b/, 'Alice scrolled off after j');
     like($after_j,   qr/Bob/,       'Bob visible after j');
 
-    # 'k' scrolls back up one row
     send_keys('k');
     my $after_k = capture();
     like($after_k, qr/Alice/, 'Alice visible again after k');
-    teardown(keep_alive => 1);
-};
 
-subtest 'vertical scroll --- Home returns to top' => sub {
-    launch(height => 7, reuse => 1);
+    # Home and g keys
     send_keys('Down', 'Down', 'Down');
     my $mid = capture();
     unlike($mid, qr/\bAlice\b/, 'Alice not visible mid-scroll');
-
     send_keys('Home');
-    my $top = capture();
-    like($top, qr/Alice/, 'Alice visible again after Home');
-    teardown(keep_alive => 1);
-};
+    my $top_home = capture();
+    like($top_home, qr/Alice/, 'Alice visible again after Home');
 
-subtest 'vertical scroll --- End jumps to last row' => sub {
-    launch();
-    send_keys('End');
-    my $screen = capture();
-    like($screen, qr/Jack/, 'Jack (last row) visible after End');
-    teardown();
-};
-
-subtest 'vertical scroll --- g jumps to first row' => sub {
-    launch(height => 7, reuse => 1);
     send_keys('Down', 'Down', 'Down');
-    my $mid = capture();
-    unlike($mid, qr/\bAlice\b/, 'Alice not visible mid-scroll');
-
     send_keys('g');
-    my $top = capture();
-    like($top, qr/Alice/, 'Alice visible again after g');
-    teardown();
-};
+    my $top_g = capture();
+    like($top_g, qr/Alice/, 'Alice visible again after g');
 
-subtest 'vertical scroll --- G jumps to last row' => sub {
-    launch();
+    # End and G jump to last row at bottom of view
+    send_keys('End');
+    my $screen_end = capture();
+    like($screen_end, qr/Jack/, 'Jack visible after End');
+    like($screen_end, qr/Rows 6-10 of 10/, 'End sets last row at bottom of view');
+
+    send_keys('Home');
     send_keys('G');
-    my $screen = capture();
-    like($screen, qr/Jack/, 'Jack (last row) visible after G');
-    teardown();
-};
-
-subtest 'horizontal scroll --- right shifts content' => sub {
-    launch(cmd => "$dless $fixtures/wide.tsv", width => 80);
-    my $before = capture();
-    like($before, qr/col1/, 'col1 header visible before scroll');
-
-    send_keys('Right');
-
-    my $after = capture();
-    like($after, qr/Col offset:\s*10/, 'status bar shows offset 10 after one Right');
-    teardown();
-};
-
-subtest 'horizontal scroll --- Left at offset 0 stays at 0' => sub {
-    launch(cmd => "$dless $fixtures/wide.tsv", width => 80);
-    send_keys('Left');
-    my $screen = capture();
-    like($screen, qr/Col offset:\s*0/, 'offset stays 0 at left boundary');
-    teardown();
-};
-
-subtest 'help overlay appears on ?' => sub {
-    launch();
-    send_keys('?');
-    my $screen = capture();
-    like($screen, qr/KEYBINDINGS/, 'help overlay shows KEYBINDINGS');
-    like($screen, qr/Quit/,        'help overlay shows Quit binding');
-    send_keys('Escape');
-    teardown(keep_alive => 1);
-};
-
-subtest 'help overlay appears on h' => sub {
-    launch(reuse => 1);
-    send_keys('h');
-    my $screen = capture();
-    like($screen, qr/KEYBINDINGS/, 'help overlay shows KEYBINDINGS');
-    like($screen, qr/Quit/,        'help overlay shows Quit binding');
-    like($screen, qr/C-b/,         'help overlay shows C-b binding');
-    like($screen, qr/&/,           'help overlay shows & binding');
-    send_keys('Escape');
-    teardown(keep_alive => 1);
-};
-
-subtest 'help overlay dismissed by any key' => sub {
-    launch(reuse => 1);
-    send_keys('?');
-    send_keys('x');
-    select(undef, undef, undef, 0.05);
-    my $alive = system("$tmux has-session -t $SESSION 2>/dev/null");
-    is($alive, 0, 'session still alive after dismissing help with x');
-    teardown();
-};
-
-subtest 'q quits the viewer' => sub {
-    launch();
-    send_keys('q');
-    select(undef, undef, undef, 0.3);
-    my $alive = system("$tmux has-session -t $SESSION 2>/dev/null");
-    isnt($alive, 0, 'session no longer exists after q');
-    teardown();
-};
-
-subtest 'pipe input (cat | dless)' => sub {
-    launch(cmd => "cat $fixtures/basic.tsv | $dless");
-    my $screen = capture();
-    like($screen, qr/name/,   'header visible from piped input');
-    like($screen, qr/Alice/,  'data visible from piped input');
-    like($screen, qr/stdin/i, 'status bar shows stdin for piped input');
-    teardown();
-};
-
-subtest 'custom delimiter -d' => sub {
-    launch(cmd => "$dless -d , $fixtures/csv.csv");
-    my $screen = capture();
-    like($screen, qr/product/,  'CSV header "product" visible');
-    like($screen, qr/price/,    'CSV header "price" visible');
-    like($screen, qr/Widget/,   'CSV data visible');
-    teardown();
-};
-
-subtest 'page down scrolls by one screenful' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv", height => 8);
-
-    my $before = capture();
-    like($before, qr/Alice/, 'Alice visible before PgDn');
-
-    send_keys('NPage');
-    select(undef, undef, undef, 0.05);
-
-    my $after = capture();
-    unlike($after, qr/\bAlice\b/, 'Alice scrolled off after PgDn');
-    send_keys('Home');
-    teardown(keep_alive => 1);
-};
-
-subtest 'space bar scrolls by one screenful (PgDn synonym)' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv", height => 8, reuse => 1);
-
-    my $before = capture();
-    like($before, qr/Alice/, 'Alice visible before Space');
-
-    send_keys('Space');
-    select(undef, undef, undef, 0.05);
-
-    my $after = capture();
-    unlike($after, qr/\bAlice\b/, 'Alice scrolled off after Space');
-    send_keys('Home');
-    teardown(keep_alive => 1);
-};
-
-subtest 'backspace key scrolls up by one screenful (PgUp synonym)' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv", height => 8, reuse => 1);
-
-    send_keys('Space');
-    select(undef, undef, undef, 0.05);
-    my $down = capture();
-    unlike($down, qr/\bAlice\b/, 'Alice scrolled off after Space');
-
-    send_keys('BSpace');
-    select(undef, undef, undef, 0.05);
-    my $up = capture();
-    like($up, qr/\bAlice\b/, 'Alice visible again after Backspace');
-    send_keys('Home');
-    teardown(keep_alive => 1);
-};
-
-subtest 'C-f and f scroll down by one screenful (PgDn synonyms)' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv", height => 8, reuse => 1);
-
-    send_keys('C-f');
-    select(undef, undef, undef, 0.05);
-    my $after_cf = capture();
-    unlike($after_cf, qr/\bAlice\b/, 'Alice scrolled off after C-f');
-
-    send_keys('Home');
-    send_keys('f');
-    select(undef, undef, undef, 0.05);
-    my $after_f = capture();
-    unlike($after_f, qr/\bAlice\b/, 'Alice scrolled off after f');
-
-    send_keys('Home');
-    teardown(keep_alive => 1);
-};
-
-subtest 'C-b scrolls up by one screenful (PgUp synonym)' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv", height => 8, reuse => 1);
-
-    send_keys('Space');
-    select(undef, undef, undef, 0.05);
-    my $down = capture();
-    unlike($down, qr/\bAlice\b/, 'Alice scrolled off after Space');
-
-    send_keys('C-b');
-    select(undef, undef, undef, 0.05);
-    my $up = capture();
-    like($up, qr/\bAlice\b/, 'Alice visible again after C-b');
-    teardown();
-};
-
-subtest '-N flag shows line numbers' => sub {
-    launch(cmd => "$dless -N $fixtures/basic.tsv");
-    my $screen = capture();
-    like($screen, qr/^\s*1\s+Alice/m, 'line number 1 visible next to Alice');
-    like($screen, qr/^\s*10\s+Jack/m, 'line number 10 visible next to Jack');
-    teardown();
-};
-
-subtest '-n flag is invalid when -N is required' => sub {
-    my $out = `$dless -n $fixtures/basic.tsv 2>&1`;
-    like($out, qr/Unknown option: n|Usage/i, '-n flag rejected when -N is required');
-};
-
-subtest '-N flag freezes line numbers column during horizontal scroll' => sub {
-    launch(cmd => "$dless -N $fixtures/wide.tsv", width => 80);
-    send_keys('Right');
-    my $screen = capture();
-    like($screen, qr/^\s*1\s+/m, 'line number 1 remains frozen on left after horizontal scroll');
-    like($screen, qr/Col offset:\s*10/, 'horizontal scroll offset updated');
-    teardown();
-};
-
-subtest 'N key toggles line numbers' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-    my $before = capture();
-    unlike($before, qr/^\s*1\s+Alice/m, 'line numbers not shown by default');
-
-    send_keys('N');
-    select(undef, undef, undef, 0.2);
-
-    my $prompt = capture();
-    like($prompt, qr/Constantly display line numbers/, 'prompt message shown after pressing N');
-    unlike($prompt, qr/^\s*1\s+Alice/m, 'line numbers not shown until Enter is pressed');
-
-    send_keys('Enter');
-    select(undef, undef, undef, 0.2);
-
-    my $after = capture();
-    like($after, qr/^\s*1\s+Alice/m, 'line numbers shown after pressing Enter');
-
-    send_keys('N');
-    select(undef, undef, undef, 0.2);
-
-    my $prompt_off = capture();
-    like($prompt_off, qr/Don't use line numbers/, 'prompt message shown after pressing N when numbers on');
-
-    send_keys('Enter');
-    select(undef, undef, undef, 0.2);
-
-    my $off = capture();
-    unlike($off, qr/^\s*1\s+Alice/m, 'line numbers hidden after pressing Enter');
-    teardown();
-};
-
-subtest 'pressing Esc after - cancels prompt and returns to normal operation' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-    send_keys('-');
-    select(undef, undef, undef, 0.2);
-
-    my $prompt = capture();
-    like($prompt, qr/^\s*-\s*$/m, 'dash prompt active on status bar');
-
-    send_keys('Escape');
-    select(undef, undef, undef, 0.2);
-
-    my $normal = capture();
-    like($normal, qr/Rows \d+-\d+ of \d+/, 'returns to normal operation status bar after Esc');
-    unlike($normal, qr/^\s*-\s*$/m, 'dash prompt cleared after Esc');
-    teardown();
-};
-
-subtest '1 and 0 keys toggle column numbers' => sub {
-    launch();
-    my $screen_init = capture();
-    unlike($screen_init, qr/1\s+2\s+3/, 'column numbers hidden by default');
-
-    # Press 1 to turn on 1-based column numbers
-    send_keys('1');
-    my $screen1 = capture();
-    like($screen1, qr/1\s+2\s+3/, '1-based column numbers shown after pressing 1');
-
-    # Press 1 again to toggle off
-    send_keys('1');
-    my $screen_off = capture();
-    unlike($screen_off, qr/1\s+2\s+3/, 'column numbers hidden after pressing 1 again');
-
-    # Press 0 to turn on 0-based column numbers
-    send_keys('0');
-    my $screen0 = capture();
-    like($screen0, qr/0\s+1\s+2/, '0-based column numbers (0 1 2) shown after pressing 0');
-
-    # Press 0 again to toggle 0-based column numbers off
-    send_keys('0');
-    my $screen_off2 = capture();
-    unlike($screen_off2, qr/0\s+1\s+2/, 'column numbers hidden after pressing 0 again');
-
-    # Press 1 to turn back on 1-based column numbers
-    send_keys('1');
-    my $screen1_back = capture();
-    like($screen1_back, qr/1\s+2\s+3/, '1-based column numbers restored after pressing 1');
-    teardown();
-};
-
-subtest 'search prompt and regex matching' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-    send_keys('/');
-    select(undef, undef, undef, 0.05);
-
-    my $prompt = capture();
-    like($prompt, qr/\//, 'search prompt starts with /');
-
-    send_keys('A', 'l', 'i', 'c', 'e', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $screen = capture();
-    like($screen, qr/Alice/, 'Alice found and visible on screen');
-
-    teardown(keep_alive => 1);
-};
-
-subtest 'search logic --- n and p navigation with wrap around' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv", reuse => 1);
-
-    send_keys('n');
-    select(undef, undef, undef, 0.05);
-
-    my $wrap = capture();
-    like($wrap, qr/wrapped/i, 'wrap message shown when wrapping search');
-
-    send_keys('p');
-    select(undef, undef, undef, 0.05);
-
-    my $screen = capture();
-    like($screen, qr/Alice/, 'navigated back to Alice');
-
-    teardown(keep_alive => 1);
-};
-
-subtest 'invalid regex handling' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv", reuse => 1);
-    send_keys('/', '[', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $screen = capture();
-    like($screen, qr/Invalid regex/i, 'status bar shows invalid regex error message');
-
-    teardown(keep_alive => 1);
-};
-
-subtest '& option filters rows by regex and empty expression clears filter' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv", reuse => 1);
-
-    send_keys('&');
-    select(undef, undef, undef, 0.05);
-
-    my $prompt = capture();
-    like($prompt, qr/&/, 'filter prompt starts with &');
-
-    send_keys('A', 'l', 'i', 'c', 'e', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $filtered = capture();
-    like($filtered, qr/Alice/, 'Alice is visible when filtered');
-    unlike($filtered, qr/Bob/, 'Bob is hidden when filtered');
-
-    send_keys('&', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $all = capture();
-    like($all, qr/Alice/, 'Alice visible after clearing filter');
-    like($all, qr/Bob/,   'Bob visible again after clearing filter');
-
-    teardown();
-};
-
-subtest 'Tab scrolls right 4/5 viewport' => sub {
-    # wide.tsv has 15 columns; viewport is 80 wide, so step = int(80*4/5) = 64
-    # col1..col5 headers are visible at offset 0; after one Tab they should scroll off
-    launch(cmd => "$dless $fixtures/wide.tsv", width => 80);
-    my $before = capture();
-    like($before, qr/col1/, 'col1 visible before Tab');
-
-    send_keys('Tab');
-    select(undef, undef, undef, 0.2);
-
-    my $after = capture();
-    unlike($after, qr/\bcol1\b/, 'col1 scrolled off after Tab');
-
-    teardown(keep_alive => 1);
-};
-
-subtest 'Shift-Tab scrolls left 4/5 viewport' => sub {
-    # Start scrolled right with Tab, then Shift-Tab should bring col1 back
-    launch(cmd => "$dless $fixtures/wide.tsv", width => 80, reuse => 1);
-
-    my $after_tab = capture();
-    unlike($after_tab, qr/\bcol1\b/, 'col1 scrolled off after Tab');
-
-    send_keys('BTab');
-    select(undef, undef, undef, 0.2);
-
-    my $after_shift_tab = capture();
-    like($after_shift_tab, qr/col1/, 'col1 back after Shift-Tab');
-
-    teardown();
-};
-
-# ------------------------------
-# History Integration Tests
-# ------------------------------
-
-subtest 'search history recall with Up arrow' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Run search for Bob
-    send_keys('/', 'B', 'o', 'b', 'Enter');
-    select(undef, undef, undef, 0.2);
-
-    # Open search prompt again, press Up arrow
-    send_keys('/', 'Up');
-    select(undef, undef, undef, 0.2);
-
-    my $prompt = capture();
-    like($prompt, qr/\/Bob/, 'search prompt recalled Bob via Up arrow');
-
-    # Press Enter to execute recalled search
-    send_keys('Enter');
-    select(undef, undef, undef, 0.2);
-
-    my $screen = capture();
-    like($screen, qr/Bob/, 'search for Bob executed successfully from history');
-
-    teardown();
-};
-
-subtest 'filter history recall and edit with Up arrow' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Run filter for Alice
-    send_keys('&', 'A', 'l', 'i', 'c', 'e', 'Enter');
-    select(undef, undef, undef, 0.2);
-
-    my $filtered_alice = capture();
-    like($filtered_alice, qr/Alice/, 'Alice visible');
-    unlike($filtered_alice, qr/Bob/, 'Bob hidden');
-
-    # Open filter, press Up to recall Alice, edit to Bob using backspaces
-    send_keys('&', 'Up');
-    select(undef, undef, undef, 0.2);
-
-    my $prompt_alice = capture();
-    like($prompt_alice, qr/&Alice/, 'filter prompt recalled Alice via Up arrow');
-
-    # Backspace 'Alice', type 'Bob', press Enter
-    send_keys('BSpace', 'BSpace', 'BSpace', 'BSpace', 'BSpace', 'B', 'o', 'b', 'Enter');
-    select(undef, undef, undef, 0.2);
-
-    my $filtered_bob = capture();
-    like($filtered_bob, qr/Bob/, 'Bob visible after editing recalled filter');
-    unlike($filtered_bob, qr/Alice/, 'Alice hidden after editing recalled filter');
-
-    # Open filter again and verify history contains both Bob (newest) and Alice (older)
-    send_keys('&', 'Up');
-    select(undef, undef, undef, 0.2);
-    my $p_bob = capture();
-    like($p_bob, qr/&Bob/, 'newest filter history is Bob');
-
-    send_keys('Up');
-    select(undef, undef, undef, 0.2);
-    my $p_alice = capture();
-    like($p_alice, qr/&Alice/, 'previous filter history is Alice');
-
-    # Down arrow restores Bob, then Down arrow restores empty draft
-    send_keys('Down');
-    select(undef, undef, undef, 0.2);
-    my $p_bob_restored = capture();
-    like($p_bob_restored, qr/&Bob/, 'Down arrow restored Bob');
-
-    send_keys('Down');
-    select(undef, undef, undef, 0.2);
-    my $p_draft = capture();
-    like($p_draft, qr/&[ ]*$/, 'Down arrow past newest restored empty draft');
-
-    # Cancel prompt
-    send_keys('Escape');
-    teardown();
-};
-
-subtest 'multi-field search across column boundaries' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Search for pattern spanning name and age: 'Alice\t30'
-    send_keys('/', 'A', 'l', 'i', 'c', 'e', 'Tab', '3', '0', 'Enter');
-    select(undef, undef, undef, 0.2);
-
-    my $screen = capture();
-    like($screen, qr/Alice/, 'Alice row found with multi-field search');
-
-    teardown();
-};
-
-subtest 'multi-field filter across column boundaries' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Filter by pattern spanning name and age: 'Alice\t30'
-    send_keys('&', 'A', 'l', 'i', 'c', 'e', 'Tab', '3', '0', 'Enter');
-    select(undef, undef, undef, 0.2);
-
-    my $filtered = capture();
-    like($filtered, qr/Alice/, 'Alice is visible when multi-field filtered');
-    unlike($filtered, qr/Bob/, 'Bob is hidden when multi-field filtered');
-
-    teardown();
-};
-
-subtest 'csv option --csv with RFC 4180 parsing' => sub {
-    launch(cmd => "$dless --csv $fixtures/quoted.csv");
-    my $screen = capture();
-
-    like($screen, qr/name/, 'header visible');
-    like($screen, qr/Widget, Basic/, 'embedded comma in quoted string preserved');
-    like($screen, qr/Widget "Pro"/, 'escaped quotes unescaped in display');
-    like($screen, qr/Multi-line\\ngadget/, 'embedded newline displayed as literal \\n');
-
-    teardown();
-};
-
-subtest 'csv short option -c' => sub {
-    launch(cmd => "$dless -c $fixtures/quoted.csv");
-    my $screen = capture();
-
-    like($screen, qr/Widget, Basic/, 'works with -c flag');
-    teardown();
-};
-
-subtest 'long delimiter option --delimiter' => sub {
-    launch(cmd => "$dless --delimiter , $fixtures/csv.csv");
-    my $screen = capture();
-
-    like($screen, qr/product/, 'header visible with --delimiter');
-    like($screen, qr/Widget/, 'data visible with --delimiter');
-    teardown();
-};
-
-subtest 'search in CSV mode matches unquoted clean data' => sub {
-    launch(cmd => "$dless --csv $fixtures/quoted.csv");
-
-    send_keys('/', 'W', 'i', 'd', 'g', 'e', 't', ' ', '"', 'P', 'r', 'o', '"', 'Enter');
-    select(undef, undef, undef, 0.2);
-
-    my $screen = capture();
-    like($screen, qr/Widget "Pro"/, 'searched and matched unquoted string');
-
-    teardown();
-};
-
-subtest 'w key prompt and column number display' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Initially column numbers are hidden
-    my $initial = capture();
-    unlike($initial, qr/1\s+2\s+3/, 'column numbers initially hidden');
-
-    # Press w to open width prompt
-    send_keys('w');
-    select(undef, undef, undef, 0.05);
-
-    my $prompt = capture();
-    like($prompt, qr/w\s*/, 'w prompt active on status bar');
-    like($prompt, qr/1\s+2\s+3/, '1-based column numbers temporarily shown during prompt');
-
-    # Cancel prompt with Esc
-    send_keys('Escape');
-    select(undef, undef, undef, 0.05);
-
-    my $cancelled = capture();
-    unlike($cancelled, qr/1\s+2\s+3/, 'column numbers restored to hidden after Esc');
-
-    teardown();
-};
-
-subtest 'w key shrinks column to header length and toggles back' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # In basic.tsv: col 1 is 'name' (longest 'Grace'=5), col 2 is 'age' (3)
-    # Shrink col 1 to header length ('name'=4)
-    send_keys('w', '1', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $shrunk = capture();
-    # Grace in col 1 should be truncated with > -> 'Gra>'
-    like($shrunk, qr/Gra>/, 'col 1 truncated to 4 chars');
-
-    # Toggle col 1 back to full width
-    send_keys('w', '1', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $restored = capture();
-    like($restored, qr/Grace/, 'col 1 restored to full width');
-
-    teardown();
-};
-
-subtest 'w key custom width and hide column' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Hide col 1 with 1:0
-    send_keys('w', '1', ':', '0', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $hidden = capture();
-    like($hidden, qr/\|\s+age/, 'col 1 header hidden with |');
-    like($hidden, qr/\|\s+30/,  'col 1 data hidden with |');
-
-    # Set col 1 custom width 10
-    send_keys('w', '1', ':', '1', '0', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $custom = capture();
-    like($custom, qr/name\s{7}age/, 'col 1 header expanded with custom width 10');
-    like($custom, qr/Alice\s{7}30/, 'col 1 data row expanded with custom width 10');
-
-    # Reset all columns with empty input
-    send_keys('w', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $reset = capture();
-    like($reset, qr/name\s{2}age/, 'col 1 header reset to original width');
-    like($reset, qr/Alice\s+30/,    'col 1 data row reset to original width');
-
-    teardown();
-};
-
-subtest 'w key hides column using N- synonym' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Hide col 1 with 1-
-    send_keys('w', '1', '-', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $hidden = capture();
-    like($hidden, qr/\|\s+age/, 'col 1 header hidden with | using 1-');
-    like($hidden, qr/\|\s+30/,  'col 1 data hidden with | using 1-');
-
-    # Toggle col 1 back with 1
-    send_keys('w', '1', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $restored = capture();
-    like($restored, qr/name\s{2}age/, 'col 1 header restored after typing 1');
-
-    teardown();
-};
-
-subtest 'w key hides multiple adjacent columns as ||' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Hide col 2 (age) and col 3 (score)
-    send_keys('w', '2', ':', '0', 'Enter');
-    select(undef, undef, undef, 0.05);
-    send_keys('w', '3', ':', '0', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $hidden = capture();
-    like($hidden, qr/name\s+\|\|\s+city/, 'headers show || without spaces between adjacent hidden cols');
-    like($hidden, qr/Alice\s+\|\|\s+New York/, 'data rows show || without spaces between adjacent hidden cols');
-
-    teardown();
-};
-
-subtest 'w key accepts multiple column specifiers on one line' => sub {
-    launch(cmd => "$dless $fixtures/basic.tsv");
-
-    # Enter multiple specifiers: shrink col 1 (name), hide col 2 (age), set col 3 (score) to 12
-    send_keys('w', '1', ' ', '2', ':', '0', ' ', '3', ':', '1', '2', 'Enter');
-    select(undef, undef, undef, 0.05);
-
-    my $screen = capture();
-    # col 1 shrunk to 'name' (4 chars, Grace -> Gra>)
-    like($screen, qr/Gra>/, 'col 1 shrunk to header length');
-    # col 2 hidden (|)
-    like($screen, qr/\|\s+score/, 'col 2 hidden with |');
-    # col 3 expanded to 12 (score is numeric so right-aligned with 7 leading spaces)
-    like($screen, qr/\|\s{8}score city/, 'col 3 expanded to width 12');
-
-    teardown();
-};
-
-subtest 'CLI usage vs detailed help flags' => sub {
-    # No args (interactive terminal invocation): exits 1 and prints short usage to STDERR
-    launch(cmd => "$dless; sleep 0.5");
-    select(undef, undef, undef, 0.1);
-    my $no_args_out = capture();
-    like($no_args_out, qr/Usage: dless/, 'no args prints usage');
-    unlike($no_args_out, qr/Navigation Commands:/, 'no args does not print detailed command list');
-    teardown();
-
-    # -h flag: exits 0 and prints detailed help
-    my $short_h_out = `$dless -h 2>&1`;
-    my $short_h_exit = $? >> 8;
-    is($short_h_exit, 0, '-h exits with code 0');
-    like($short_h_out, qr/Navigation Commands:/, '-h includes navigation commands');
-    like($short_h_out, qr/Search & Filter Commands:/, '-h includes search/filter commands');
-    like($short_h_out, qr/Column & Display Commands:/, '-h includes column commands');
-
-    # --help flag: exits 0 and prints detailed help
-    my $long_h_out = `$dless --help 2>&1`;
-    my $long_h_exit = $? >> 8;
-    is($long_h_exit, 0, '--help exits with code 0');
-    like($long_h_out, qr/Navigation Commands:/, '--help includes navigation commands');
-};
-
-subtest 'automatic decompression of gzip and zstd files' => sub {
-    # Gzip file
-    launch(cmd => "$dless $fixtures/basic.tsv.gz", width => 100);
-    my $gz_screen = capture();
-    like($gz_screen, qr/name/, 'header visible from gzip file');
-    like($gz_screen, qr/Alice/, 'data visible from gzip file');
-    like($gz_screen, qr/basic\.tsv\.gz/, 'status bar shows gzip filename');
-    teardown();
-
-    # Zstd file
-    launch(cmd => "$dless $fixtures/basic.tsv.zst", width => 100);
-    my $zst_screen = capture();
-    like($zst_screen, qr/name/, 'header visible from zstd file');
-    like($zst_screen, qr/Alice/, 'data visible from zstd file');
-    like($zst_screen, qr/basic\.tsv\.zst/, 'status bar shows zstd filename');
-    teardown();
-};
-
-subtest 'automatic decompression of piped gzip and zstd input' => sub {
-    # Piped gzip
-    launch(cmd => "cat $fixtures/basic.tsv.gz | $dless");
-    my $gz_pipe = capture();
-    like($gz_pipe, qr/name/, 'header visible from piped gzip input');
-    like($gz_pipe, qr/Alice/, 'data visible from piped gzip input');
-    teardown();
-
-    # Piped zstd
-    launch(cmd => "cat $fixtures/basic.tsv.zst | $dless");
-    my $zst_pipe = capture();
-    like($zst_pipe, qr/name/, 'header visible from piped zstd input');
-    like($zst_pipe, qr/Alice/, 'data visible from piped zstd input');
-    teardown();
-};
-
-subtest 'scroll down past end of file until last row is top line' => sub {
-    launch(height => 7);
-    # Height 7 -> 5 visible data rows. basic.tsv has 10 data rows (Alice..Jack).
-    # Scroll down past the bottom of the file (10 Down presses)
+    my $screen_g = capture();
+    like($screen_g, qr/Jack/, 'Jack visible after G');
+    like($screen_g, qr/Rows 6-10 of 10/, 'G sets last row at bottom of view');
+
+    # Scroll past end of file until last row is top line
     for (1 .. 10) {
         send_keys('Down');
     }
-    my $screen = capture();
-    # Jack should be at the top of the data rows, and status bar shows Rows 10-10 of 10
-    like($screen, qr/Jack/, 'Jack visible at top of view');
-    unlike($screen, qr/Iris/, 'Iris not visible when Jack is top line');
-    like($screen, qr/Rows 10-10 of 10/, 'status bar shows Rows 10-10 of 10');
+    my $screen_eof = capture();
+    like($screen_eof, qr/Jack/, 'Jack visible at top of view');
+    unlike($screen_eof, qr/Iris/, 'Iris not visible when Jack is top line');
+    like($screen_eof, qr/Rows 10-10 of 10/, 'status bar shows Rows 10-10 of 10');
 
     # Down again stays clamped at max_v
     send_keys('Down');
-    my $screen2 = capture();
-    like($screen2, qr/Rows 10-10 of 10/, 'remains clamped at max_v after extra Down');
+    my $screen_clamped = capture();
+    like($screen_clamped, qr/Rows 10-10 of 10/, 'remains clamped at max_v after extra Down');
 
-    # G jumps so last line is at bottom of view (offset 5: rows 6-10)
+    # G returns to bottom position
     send_keys('G');
-    my $screen_g = capture();
-    like($screen_g, qr/Rows 6-10 of 10/, 'G jumps so last line is at bottom of view');
-    like($screen_g, qr/Frank/, 'Frank visible after G');
-    like($screen_g, qr/Jack/, 'Jack visible after G');
+    my $screen_g_back = capture();
+    like($screen_g_back, qr/Rows 6-10 of 10/, 'G jumps so last line is at bottom of view');
+    like($screen_g_back, qr/Frank/, 'Frank visible after G');
+    like($screen_g_back, qr/Jack/, 'Jack visible after G');
 
-    # Pressing Down from bottom position scrolls past end
+    # Pressing Down from bottom position scrolls past bottom
     send_keys('Down');
-    my $screen_down = capture();
-    like($screen_down, qr/Rows 7-10 of 10/, 'Down after G scrolls past bottom');
-    unlike($screen_down, qr/Frank/, 'Frank scrolled off');
+    my $screen_down_past = capture();
+    like($screen_down_past, qr/Rows 7-10 of 10/, 'Down after G scrolls past bottom');
+    unlike($screen_down_past, qr/Frank/, 'Frank scrolled off');
 
-    # Home jumps back to top
+    # Page down past end of file
     send_keys('Home');
-    my $screen_home = capture();
-    like($screen_home, qr/Rows 1-5 of 10/, 'Home jumps back to row 1');
-    like($screen_home, qr/Alice/, 'Alice visible after Home');
-
-    teardown();
-};
-
-subtest 'page down past end of file' => sub {
-    launch(height => 7);
-    # 5 visible rows per page. First PgDn moves to rows 6-10. Second PgDn moves to offset 9 (Jack at top).
     send_keys('PgDn');
     my $p1 = capture();
     like($p1, qr/Rows 6-10 of 10/, 'first PgDn reaches bottom of file');
@@ -950,53 +225,464 @@ subtest 'page down past end of file' => sub {
     teardown();
 };
 
-subtest 'scroll past end of short file' => sub {
+# ------------------------------------------------------------
+# Suite 4: Page Scrolling Key Synonyms & Short File Scroll
+# ------------------------------------------------------------
+subtest 'page scrolling synonyms and short files' => sub {
+    launch(cmd => "$dless $fixtures/basic.tsv", height => 8);
+
+    # PgDn (NPage)
+    my $before = capture();
+    like($before, qr/Alice/, 'Alice visible before PgDn');
+    send_keys('NPage');
+    my $after_pgdn = capture();
+    unlike($after_pgdn, qr/\bAlice\b/, 'Alice scrolled off after PgDn');
+
+    # Space (PgDn synonym)
+    send_keys('Home');
+    send_keys('Space');
+    my $after_space = capture();
+    unlike($after_space, qr/\bAlice\b/, 'Alice scrolled off after Space');
+
+    # Backspace (PgUp synonym)
+    send_keys('BSpace');
+    my $after_bspace = capture();
+    like($after_bspace, qr/\bAlice\b/, 'Alice visible again after Backspace');
+
+    # C-f and f (PgDn synonyms)
+    send_keys('C-f');
+    my $after_cf = capture();
+    unlike($after_cf, qr/\bAlice\b/, 'Alice scrolled off after C-f');
+
+    send_keys('Home');
+    send_keys('f');
+    my $after_f = capture();
+    unlike($after_f, qr/\bAlice\b/, 'Alice scrolled off after f');
+
+    # C-b (PgUp synonym)
+    send_keys('C-b');
+    my $after_cb = capture();
+    like($after_cb, qr/\bAlice\b/, 'Alice visible again after C-b');
+
+    teardown();
+
+    # Short file in tall window (height 20 -> 18 visible data rows, 10 rows in basic.tsv)
     launch(height => 20);
-    # Height 20 -> 18 visible data rows. 10 rows in basic.tsv fits completely.
-    # Scroll down 9 times so Jack (10th row) is at the top line.
     for (1 .. 10) {
         send_keys('j');
     }
-    my $screen = capture();
-    like($screen, qr/Rows 10-10 of 10/, 'short file scrolls until last row is top line');
-    unlike($screen, qr/Alice/, 'Alice scrolled off');
-    unlike($screen, qr/Iris/, 'Iris scrolled off');
+    my $short_screen = capture();
+    like($short_screen, qr/Rows 10-10 of 10/, 'short file scrolls until last row is top line');
+    unlike($short_screen, qr/Alice/, 'Alice scrolled off');
+    unlike($short_screen, qr/Iris/, 'Iris scrolled off');
 
-    # G in short file jumps back to offset 0
     send_keys('G');
-    my $screen_g = capture();
-    like($screen_g, qr/Rows 1-10 of 10/, 'G in short file returns to offset 0');
-    like($screen_g, qr/Alice/, 'Alice visible again');
+    my $short_g = capture();
+    like($short_g, qr/Rows 1-10 of 10/, 'G in short file returns to offset 0');
+    like($short_g, qr/Alice/, 'Alice visible again');
 
     teardown();
 };
 
-subtest 'search and filter execution transitions' => sub {
-    launch();
-    # Submit search for Bob
-    send_keys('/', 'B', 'o', 'b', 'Enter');
-    my $search_res = capture();
-    like($search_res, qr/Bob/, 'Bob found after search');
+# ------------------------------------------------------------
+# Suite 5: Horizontal Navigation & Wide Viewport
+# ------------------------------------------------------------
+subtest 'horizontal navigation and wide viewport' => sub {
+    launch(cmd => "$dless $fixtures/wide.tsv", width => 80);
+
+    # Right shifts content
+    my $before = capture();
+    like($before, qr/col1/, 'col1 header visible before scroll');
+    send_keys('Right');
+    my $after_right = capture();
+    like($after_right, qr/Col offset:\s*10/, 'status bar shows offset 10 after one Right');
+
+    # Left at offset 0 stays at 0
+    send_keys('Left');
+    my $at_zero = capture();
+    like($at_zero, qr/Col offset:\s*0/, 'offset stays 0 at left boundary');
+
+    # Tab scrolls right 4/5 viewport
+    send_keys('Tab');
+    my $after_tab = capture();
+    unlike($after_tab, qr/\bcol1\b/, 'col1 scrolled off after Tab');
+
+    # Shift-Tab scrolls left 4/5 viewport
+    send_keys('BTab');
+    my $after_shift_tab = capture();
+    like($after_shift_tab, qr/col1/, 'col1 back after Shift-Tab');
+
+    teardown();
+
+    # -N flag freezes line numbers column during horizontal scroll
+    launch(cmd => "$dless -N $fixtures/wide.tsv", width => 80);
+    send_keys('Right');
+    my $screen_n = capture();
+    like($screen_n, qr/^\s*1\s+/m, 'line number 1 remains frozen on left after horizontal scroll');
+    like($screen_n, qr/Col offset:\s*10/, 'horizontal scroll offset updated');
+    teardown();
+};
+
+# ------------------------------------------------------------
+# Suite 6: Display Toggles (Line Numbers & Column Numbers)
+# ------------------------------------------------------------
+subtest 'display toggles for line numbers and column numbers' => sub {
+    # CLI -N flag
+    launch(cmd => "$dless -N $fixtures/basic.tsv");
+    my $screen_cli_n = capture();
+    like($screen_cli_n, qr/^\s*1\s+Alice/m, 'line number 1 visible next to Alice');
+    like($screen_cli_n, qr/^\s*10\s+Jack/m, 'line number 10 visible next to Jack');
+    teardown();
+
+    # Interactive N toggle
+    launch(cmd => "$dless $fixtures/basic.tsv");
+    my $before_toggle = capture();
+    unlike($before_toggle, qr/^\s*1\s+Alice/m, 'line numbers not shown by default');
+
+    send_keys('N');
+    my $prompt_n = capture();
+    like($prompt_n, qr/Constantly display line numbers/, 'prompt message shown after pressing N');
+    unlike($prompt_n, qr/^\s*1\s+Alice/m, 'line numbers not shown until Enter is pressed');
+
+    send_keys('Enter');
+    my $after_n = capture();
+    like($after_n, qr/^\s*1\s+Alice/m, 'line numbers shown after pressing Enter');
+
+    send_keys('N');
+    my $prompt_off = capture();
+    like($prompt_off, qr/Don't use line numbers/, 'prompt message shown after pressing N when numbers on');
+
+    send_keys('Enter');
+    my $off_n = capture();
+    unlike($off_n, qr/^\s*1\s+Alice/m, 'line numbers hidden after pressing Enter');
+
+    # Pressing Esc after '-' cancels prompt
+    send_keys('-');
+    my $dash_prompt = capture();
+    like($dash_prompt, qr/^\s*-\s*$/m, 'dash prompt active on status bar');
+
+    send_keys('Escape');
+    my $normal = capture();
+    like($normal, qr/Rows \d+-\d+ of \d+/, 'returns to normal operation status bar after Esc');
+    unlike($normal, qr/^\s*-\s*$/m, 'dash prompt cleared after Esc');
+
+    # 1 and 0 keys toggle column numbers
+    my $screen_init = capture();
+    unlike($screen_init, qr/1\s+2\s+3/, 'column numbers hidden by default');
+
+    send_keys('1');
+    my $screen1 = capture();
+    like($screen1, qr/1\s+2\s+3/, '1-based column numbers shown after pressing 1');
+
+    send_keys('1');
+    my $screen_off = capture();
+    unlike($screen_off, qr/1\s+2\s+3/, 'column numbers hidden after pressing 1 again');
+
+    send_keys('0');
+    my $screen0 = capture();
+    like($screen0, qr/0\s+1\s+2/, '0-based column numbers (0 1 2) shown after pressing 0');
+
+    send_keys('0');
+    my $screen_off2 = capture();
+    unlike($screen_off2, qr/0\s+1\s+2/, 'column numbers hidden after pressing 0 again');
+
+    send_keys('1');
+    my $screen1_back = capture();
+    like($screen1_back, qr/1\s+2\s+3/, '1-based column numbers restored after pressing 1');
+
+    teardown();
+};
+
+# ------------------------------------------------------------
+# Suite 7: Search & Filter Interactive Workflows
+# ------------------------------------------------------------
+subtest 'search and filter interactive workflows' => sub {
+    launch(cmd => "$dless $fixtures/basic.tsv");
+
+    # Search prompt and execution
+    send_keys('/');
+    my $prompt = capture();
+    like($prompt, qr/\//, 'search prompt starts with /');
+
+    send_keys('A', 'l', 'i', 'c', 'e', 'Enter');
+    my $search_screen = capture();
+    like($search_screen, qr/Alice/, 'Alice found and visible on screen');
+
+    # n and p navigation with wrap around
+    send_keys('n');
+    my $wrap = capture();
+    like($wrap, qr/wrapped/i, 'wrap message shown when wrapping search');
+
+    send_keys('p');
+    my $nav_p = capture();
+    like($nav_p, qr/Alice/, 'navigated back to Alice');
+
+    # Invalid regex handling
+    send_keys('/', '[', 'Enter');
+    my $invalid_screen = capture();
+    like($invalid_screen, qr/Invalid regex/i, 'status bar shows invalid regex error message');
 
     # Clear search
     send_keys('/', 'Enter');
     my $cleared_search = capture();
     like($cleared_search, qr/Rows 1-/, 'clearing search restores standard status');
 
-    # Submit filter for Alice
+    # & filter option and empty expression clears
+    send_keys('&');
+    my $f_prompt = capture();
+    like($f_prompt, qr/&/, 'filter prompt starts with &');
+
+    send_keys('A', 'l', 'i', 'c', 'e', 'Enter');
+    my $filtered = capture();
+    like($filtered, qr/Alice/, 'Alice is visible when filtered');
+    unlike($filtered, qr/Bob/, 'Bob is hidden when filtered');
+
+    send_keys('&', 'Enter');
+    my $all = capture();
+    like($all, qr/Alice/, 'Alice visible after clearing filter');
+    like($all, qr/Bob/,   'Bob visible again after clearing filter');
+
+    # Search history recall with Up arrow
+    send_keys('/', 'B', 'o', 'b', 'Enter');
+    send_keys('/', 'Up');
+    my $hist_prompt = capture();
+    like($hist_prompt, qr/\/Bob/, 'search prompt recalled Bob via Up arrow');
+
+    send_keys('Enter');
+    my $hist_screen = capture();
+    like($hist_screen, qr/Bob/, 'search for Bob executed successfully from history');
+
+    # Filter history recall, edit with Backspace, and draft restoration
     send_keys('&', 'A', 'l', 'i', 'c', 'e', 'Enter');
-    my $filter_res = capture();
-    like($filter_res, qr/Alice/, 'Alice visible in filter');
-    unlike($filter_res, qr/Bob/, 'Bob hidden in filter');
+    send_keys('&', 'Up');
+    my $prompt_alice = capture();
+    like($prompt_alice, qr/&Alice/, 'filter prompt recalled Alice via Up arrow');
+
+    send_keys('BSpace', 'BSpace', 'BSpace', 'BSpace', 'BSpace', 'B', 'o', 'b', 'Enter');
+    my $filtered_bob = capture();
+    like($filtered_bob, qr/Bob/, 'Bob visible after editing recalled filter');
+    unlike($filtered_bob, qr/Alice/, 'Alice hidden after editing recalled filter');
+
+    send_keys('&', 'Up');
+    my $p_bob = capture();
+    like($p_bob, qr/&Bob/, 'newest filter history is Bob');
+
+    send_keys('Up');
+    my $p_alice = capture();
+    like($p_alice, qr/&Alice/, 'previous filter history is Alice');
+
+    send_keys('Down');
+    my $p_bob_restored = capture();
+    like($p_bob_restored, qr/&Bob/, 'Down arrow restored Bob');
+
+    send_keys('Down');
+    my $p_draft = capture();
+    like($p_draft, qr/&[ ]*$/, 'Down arrow past newest restored empty draft');
+    send_keys('Escape');
+
+    # Multi-field search across column boundaries ('Alice\t30')
+    send_keys('/', 'A', 'l', 'i', 'c', 'e', 'Tab', '3', '0', 'Enter');
+    my $mf_search = capture();
+    like($mf_search, qr/Alice/, 'Alice row found with multi-field search');
+
+    # Multi-field filter across column boundaries ('Alice\t30')
+    send_keys('&', 'A', 'l', 'i', 'c', 'e', 'Tab', '3', '0', 'Enter');
+    my $mf_filter = capture();
+    like($mf_filter, qr/Alice/, 'Alice is visible when multi-field filtered');
+    unlike($mf_filter, qr/Bob/, 'Bob is hidden when multi-field filtered');
 
     # Clear filter
     send_keys('&', 'Enter');
-    my $cleared_filter = capture();
-    like($cleared_filter, qr/Bob/, 'Bob restored after clearing filter');
 
     teardown();
 };
 
+# ------------------------------------------------------------
+# Suite 8: Column Width Adjustments via 'w'
+# ------------------------------------------------------------
+subtest 'column width adjustments via w' => sub {
+    launch(cmd => "$dless $fixtures/basic.tsv");
+
+    # 1. Prompt and column number display
+    my $initial = capture();
+    unlike($initial, qr/1\s+2\s+3/, 'column numbers initially hidden');
+    send_keys('w');
+    my $prompt = capture();
+    like($prompt, qr/w\s*/, 'w prompt active on status bar');
+    like($prompt, qr/1\s+2\s+3/, '1-based column numbers temporarily shown during prompt');
+    send_keys('Escape');
+    my $cancelled = capture();
+    unlike($cancelled, qr/1\s+2\s+3/, 'column numbers restored to hidden after Esc');
+
+    # 2. Shrink column 1 to header length and toggle back
+    send_keys('w', '1', 'Enter');
+    my $shrunk = capture();
+    like($shrunk, qr/Gra>/, 'col 1 truncated to 4 chars');
+
+    send_keys('w', '1', 'Enter');
+    my $restored = capture();
+    like($restored, qr/Grace/, 'col 1 restored to full width');
+
+    # 3. Custom width and hide column (1:0, 1:10, reset)
+    send_keys('w', '1', ':', '0', 'Enter');
+    my $hidden = capture();
+    like($hidden, qr/\|\s+age/, 'col 1 header hidden with |');
+    like($hidden, qr/\|\s+30/,  'col 1 data hidden with |');
+
+    send_keys('w', '1', ':', '1', '0', 'Enter');
+    my $custom = capture();
+    like($custom, qr/name\s{7}age/, 'col 1 header expanded with custom width 10');
+    like($custom, qr/Alice\s{7}30/, 'col 1 data row expanded with custom width 10');
+
+    send_keys('w', 'Enter');
+    my $reset = capture();
+    like($reset, qr/name\s{2}age/, 'col 1 header reset to original width');
+    like($reset, qr/Alice\s+30/,    'col 1 data row reset to original width');
+
+    # 3b. Empty 'w' toggles all columns to header width when at full width
+    send_keys('w', 'Enter');
+    my $all_shrunk = capture();
+    like($all_shrunk, qr/Gra>/, 'all columns shrunk to header width on empty w');
+
+    send_keys('w', 'Enter');
+    my $all_restored = capture();
+    like($all_restored, qr/Grace/, 'all columns restored to full width on subsequent empty w');
+
+    # 4. Hide column using N- synonym
+    send_keys('w', '1', '-', 'Enter');
+    my $hidden_dash = capture();
+    like($hidden_dash, qr/\|\s+age/, 'col 1 header hidden with | using 1-');
+    like($hidden_dash, qr/\|\s+30/,  'col 1 data hidden with | using 1-');
+
+    send_keys('w', '1', 'Enter');
+    my $restored_dash = capture();
+    like($restored_dash, qr/name\s{2}age/, 'col 1 header restored after typing 1');
+
+    # 5. Hide multiple adjacent columns as ||
+    send_keys('w', '2', ':', '0', 'Enter');
+    send_keys('w', '3', ':', '0', 'Enter');
+    my $hidden_adj = capture();
+    like($hidden_adj, qr/name\s+\|\|\s+city/, 'headers show || without spaces between adjacent hidden cols');
+    like($hidden_adj, qr/Alice\s+\|\|\s+New York/, 'data rows show || without spaces between adjacent hidden cols');
+
+    # 6. Multiple column specifiers on one line
+    send_keys('w', '1', ' ', '2', ':', '0', ' ', '3', ':', '1', '2', 'Enter');
+    my $multi_spec = capture();
+    like($multi_spec, qr/Gra>/, 'col 1 shrunk to header length');
+    like($multi_spec, qr/\|\s+score/, 'col 2 hidden with |');
+    like($multi_spec, qr/\|\s{8}score city/, 'col 3 expanded to width 12');
+
+    teardown();
+
+    # 7. Expanding column widths to visible fields with large file
+    my $late_wide_file = "$Bin/fixtures/large_late_wide.tsv";
+    open my $fh, '>', $late_wide_file or die $!;
+    print $fh "id\tname\tdescription\n";
+    print $fh ("1\tBob\tshort\n" x 10000);
+    print $fh "10001\tAlice\tThisIsAnExtremelyLongDescriptionFieldWayBeyondTenThousand\n";
+    close $fh;
+
+    launch(cmd => "$dless $late_wide_file", width => 120);
+    send_keys('G');
+    my $before_w = capture();
+    like($before_w, qr/ThisIsAnEx>/, 'long field truncated before w');
+    unlike($before_w, qr/ThisIsAnExtremelyLongDescriptionFieldWayBeyondTenThousand/, 'full field not visible before w');
+
+    # First empty w shrinks all columns to header width and expands orig_width
+    send_keys('w', 'Enter');
+    my $after_w1 = capture();
+    like($after_w1, qr/ThisIsAnEx>/, 'field truncated to header width after first empty w');
+
+    # Second empty w restores all columns to expanded full width
+    send_keys('w', 'Enter');
+    my $after_w2 = capture();
+    like($after_w2, qr/ThisIsAnExtremelyLongDescriptionFieldWayBeyondTenThousand/, 'full field visible after second empty w');
+
+    send_keys('w', '3', 'Enter');
+    my $toggled_down = capture();
+    like($toggled_down, qr/ThisIsAnEx>/, 'field truncated again after w 3 toggled down to header');
+
+    send_keys('w', '3', 'Enter');
+    my $toggled_up = capture();
+    like($toggled_up, qr/ThisIsAnExtremelyLongDescriptionFieldWayBeyondTenThousand/, 'field restored to expanded width after w 3');
+
+    teardown();
+    unlink $late_wide_file if -f $late_wide_file;
+};
+
+# ------------------------------------------------------------
+# Suite 9: CLI Options, CSV Modes, Delimiters & Compression
+# ------------------------------------------------------------
+subtest 'cli options, csv modes, and compression' => sub {
+    # Pipe input
+    launch(cmd => "cat $fixtures/basic.tsv | $dless");
+    my $pipe_screen = capture();
+    like($pipe_screen, qr/name/,   'header visible from piped input');
+    like($pipe_screen, qr/Alice/,  'data visible from piped input');
+    like($pipe_screen, qr/stdin/i, 'status bar shows stdin for piped input');
+    teardown();
+
+    # Custom delimiter -d
+    launch(cmd => "$dless -d , $fixtures/csv.csv");
+    my $d_screen = capture();
+    like($d_screen, qr/product/,  'CSV header "product" visible');
+    like($d_screen, qr/price/,    'CSV header "price" visible');
+    like($d_screen, qr/Widget/,   'CSV data visible');
+    teardown();
+
+    # Long delimiter --delimiter
+    launch(cmd => "$dless --delimiter , $fixtures/csv.csv");
+    my $delim_screen = capture();
+    like($delim_screen, qr/product/, 'header visible with --delimiter');
+    like($delim_screen, qr/Widget/, 'data visible with --delimiter');
+    teardown();
+
+    # CSV mode --csv and search
+    launch(cmd => "$dless --csv $fixtures/quoted.csv");
+    my $csv_screen = capture();
+    like($csv_screen, qr/name/, 'header visible');
+    like($csv_screen, qr/Widget, Basic/, 'embedded comma in quoted string preserved');
+    like($csv_screen, qr/Widget "Pro"/, 'escaped quotes unescaped in display');
+    like($csv_screen, qr/Multi-line\\ngadget/, 'embedded newline displayed as literal \\n');
+
+    send_keys('/', 'W', 'i', 'd', 'g', 'e', 't', ' ', '"', 'P', 'r', 'o', '"', 'Enter');
+    my $csv_search = capture();
+    like($csv_search, qr/Widget "Pro"/, 'searched and matched unquoted string');
+    teardown();
+
+    # CSV short option -c
+    launch(cmd => "$dless -c $fixtures/quoted.csv");
+    my $c_screen = capture();
+    like($c_screen, qr/Widget, Basic/, 'works with -c flag');
+    teardown();
+
+    # Decompression of gzip and zstd files
+    launch(cmd => "$dless $fixtures/basic.tsv.gz", width => 100);
+    my $gz_screen = capture();
+    like($gz_screen, qr/name/, 'header visible from gzip file');
+    like($gz_screen, qr/Alice/, 'data visible from gzip file');
+    like($gz_screen, qr/basic\.tsv\.gz/, 'status bar shows gzip filename');
+    teardown();
+
+    launch(cmd => "$dless $fixtures/basic.tsv.zst", width => 100);
+    my $zst_screen = capture();
+    like($zst_screen, qr/name/, 'header visible from zstd file');
+    like($zst_screen, qr/Alice/, 'data visible from zstd file');
+    like($zst_screen, qr/basic\.tsv\.zst/, 'status bar shows zstd filename');
+    teardown();
+
+    # Decompression of piped gzip and zstd
+    launch(cmd => "cat $fixtures/basic.tsv.gz | $dless");
+    my $gz_pipe = capture();
+    like($gz_pipe, qr/name/, 'header visible from piped gzip input');
+    like($gz_pipe, qr/Alice/, 'data visible from piped gzip input');
+    teardown();
+
+    launch(cmd => "cat $fixtures/basic.tsv.zst | $dless");
+    my $zst_pipe = capture();
+    like($zst_pipe, qr/name/, 'header visible from piped zstd input');
+    like($zst_pipe, qr/Alice/, 'data visible from piped zstd input');
+    teardown();
+};
+
 done_testing();
-
-
