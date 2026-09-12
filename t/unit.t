@@ -972,7 +972,29 @@ subtest 'get_decompressor_command pure function' => sub {
     is_deeply([get_decompressor_command('zstd')], ['zstd', '-dc'], 'zstd command without file (stdin)');
 };
 
+subtest 'max_vertical_offset pure function' => sub {
+    is(max_vertical_offset(0), 0, '0 rows returns 0');
+    is(max_vertical_offset(1), 0, '1 row returns 0 (row 1 is top line)');
+    is(max_vertical_offset(2), 1, '2 rows returns 1 (row 2 can be top line)');
+    is(max_vertical_offset(10), 9, '10 rows returns 9 (row 10 can be top line)');
+    is(max_vertical_offset(100), 99, '100 rows returns 99');
+};
+
+subtest 'bottom_vertical_offset pure function' => sub {
+    is(bottom_vertical_offset(0, 20), 0, '0 rows with 20 viewport rows returns 0');
+    is(bottom_vertical_offset(5, 20), 0, '5 rows with 20 viewport rows returns 0');
+    is(bottom_vertical_offset(20, 20), 0, '20 rows with 20 viewport rows returns 0');
+    is(bottom_vertical_offset(25, 20), 5, '25 rows with 20 viewport rows returns 5');
+    is(bottom_vertical_offset(100, 20), 80, '100 rows with 20 viewport rows returns 80');
+};
+
+subtest 'start_search_status_msg pure function' => sub {
+    is(start_search_status_msg('/', 'Alice'), 'Searching...', '/ with query returns Searching...');
+    is(start_search_status_msg('/', ''), undef, '/ with empty query returns undef');
+    is(start_search_status_msg('&', 'Alice'), 'Filtering...', '& with query returns Filtering...');
+    is(start_search_status_msg('&', ''), undef, '& with empty query returns undef');
+    is(start_search_status_msg('w', '1:10'), undef, 'w with query returns undef');
+    is(start_search_status_msg(undef, 'Alice'), undef, 'undef mode returns undef');
+};
+
 done_testing();
-
-
-

@@ -24,14 +24,14 @@ identified by that test before running the integration test.
 Unit tests can run in any standard shell or sandboxed environment
 
 ```sh
-perl t/unit.t
+prove t/unit.t
 ```
 
 ### Running Integration Tests (Sandbox Bypass Requirement)
 Integration tests require `tmux` to simulate terminal window state.
 
 ```sh
-perl t/integration.t
+prove t/integration.t
 ```
 
 #### Why Sandbox Bypass is Needed for AI Assistants

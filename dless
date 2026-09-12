@@ -224,6 +224,27 @@ sub clamp {
     return $val;
 }
 
+# Compute maximum vertical scroll offset (allowing scrolling down until the last row is the top line of the view).
+sub max_vertical_offset {
+    my ($total_rows) = @_;
+    return max(0, $total_rows - 1);
+}
+
+# Compute vertical scroll offset that places the last row at the bottom of the viewport.
+sub bottom_vertical_offset {
+    my ($total_rows, $visible_rows) = @_;
+    return max(0, $total_rows - $visible_rows);
+}
+
+# Compute transient status message when submitting a search or filter query.
+sub start_search_status_msg {
+    my ($mode, $query) = @_;
+    return undef unless defined $mode && defined $query && length($query) > 0;
+    return 'Searching...' if $mode eq '/';
+    return 'Filtering...' if $mode eq '&';
+    return undef;
+}
+
 # Format a single cell into a fixed-width byte string.
 # Long values are truncated with '>'; short values are padded.
 # Numeric columns are right-aligned; text columns are left-aligned.
@@ -1172,7 +1193,8 @@ sub _main {
     # Rows available for data (total rows minus non-data rows: header, status bar, and optional colnum row)
     my $n_filtered_rows   = sub { scalar @$visible_indices_ref };
     my $visible_data_rows = sub { $term_rows - ($show_col_nums ? 3 : 2) };
-    my $max_v             = sub { max(0, $n_filtered_rows->() - $visible_data_rows->()) };
+    my $max_v             = sub { max_vertical_offset($n_filtered_rows->()) };
+    my $bottom_v          = sub { bottom_vertical_offset($n_filtered_rows->(), $visible_data_rows->()) };
     my $max_h             = sub {
         my $avail = $show_line_nums ? max(1, $term_cols - (length($n_rows) + 1)) : $term_cols;
         max(0, total_line_width($col_widths_ref, $is_hidden_ref) - $avail);
@@ -1447,6 +1469,12 @@ sub _main {
                 my $query = $prompt_state->{buffer};
                 $prompt_mode = undef;
 
+                my $start_msg = start_search_status_msg($mode, $query);
+                if (defined $start_msg) {
+                    $status_msg = $start_msg;
+                    $draw_screen->();
+                }
+
                 if (length($query) > 0) {
                     if ($mode eq '/') {
                         add_to_history($search_history_ref, $query, 100);
@@ -1614,7 +1642,7 @@ sub _main {
             $v_offset = 0;
             $draw_screen->();
         } elsif ($key eq "\e[F" || $key eq "\e[4~" || $key eq 'G') { # End / G
-            $v_offset = $max_v->();
+            $v_offset = $bottom_v->();
             $draw_screen->();
         }
         # Ignore all other keys

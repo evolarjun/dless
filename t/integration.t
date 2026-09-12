@@ -895,6 +895,108 @@ subtest 'automatic decompression of piped gzip and zstd input' => sub {
     teardown();
 };
 
+subtest 'scroll down past end of file until last row is top line' => sub {
+    launch(height => 7);
+    # Height 7 -> 5 visible data rows. basic.tsv has 10 data rows (Alice..Jack).
+    # Scroll down past the bottom of the file (10 Down presses)
+    for (1 .. 10) {
+        send_keys('Down');
+    }
+    my $screen = capture();
+    # Jack should be at the top of the data rows, and status bar shows Rows 10-10 of 10
+    like($screen, qr/Jack/, 'Jack visible at top of view');
+    unlike($screen, qr/Iris/, 'Iris not visible when Jack is top line');
+    like($screen, qr/Rows 10-10 of 10/, 'status bar shows Rows 10-10 of 10');
+
+    # Down again stays clamped at max_v
+    send_keys('Down');
+    my $screen2 = capture();
+    like($screen2, qr/Rows 10-10 of 10/, 'remains clamped at max_v after extra Down');
+
+    # G jumps so last line is at bottom of view (offset 5: rows 6-10)
+    send_keys('G');
+    my $screen_g = capture();
+    like($screen_g, qr/Rows 6-10 of 10/, 'G jumps so last line is at bottom of view');
+    like($screen_g, qr/Frank/, 'Frank visible after G');
+    like($screen_g, qr/Jack/, 'Jack visible after G');
+
+    # Pressing Down from bottom position scrolls past end
+    send_keys('Down');
+    my $screen_down = capture();
+    like($screen_down, qr/Rows 7-10 of 10/, 'Down after G scrolls past bottom');
+    unlike($screen_down, qr/Frank/, 'Frank scrolled off');
+
+    # Home jumps back to top
+    send_keys('Home');
+    my $screen_home = capture();
+    like($screen_home, qr/Rows 1-5 of 10/, 'Home jumps back to row 1');
+    like($screen_home, qr/Alice/, 'Alice visible after Home');
+
+    teardown();
+};
+
+subtest 'page down past end of file' => sub {
+    launch(height => 7);
+    # 5 visible rows per page. First PgDn moves to rows 6-10. Second PgDn moves to offset 9 (Jack at top).
+    send_keys('PgDn');
+    my $p1 = capture();
+    like($p1, qr/Rows 6-10 of 10/, 'first PgDn reaches bottom of file');
+
+    send_keys('PgDn');
+    my $p2 = capture();
+    like($p2, qr/Rows 10-10 of 10/, 'second PgDn pages past end to max_v');
+    like($p2, qr/Jack/, 'Jack visible at top line');
+
+    teardown();
+};
+
+subtest 'scroll past end of short file' => sub {
+    launch(height => 20);
+    # Height 20 -> 18 visible data rows. 10 rows in basic.tsv fits completely.
+    # Scroll down 9 times so Jack (10th row) is at the top line.
+    for (1 .. 10) {
+        send_keys('j');
+    }
+    my $screen = capture();
+    like($screen, qr/Rows 10-10 of 10/, 'short file scrolls until last row is top line');
+    unlike($screen, qr/Alice/, 'Alice scrolled off');
+    unlike($screen, qr/Iris/, 'Iris scrolled off');
+
+    # G in short file jumps back to offset 0
+    send_keys('G');
+    my $screen_g = capture();
+    like($screen_g, qr/Rows 1-10 of 10/, 'G in short file returns to offset 0');
+    like($screen_g, qr/Alice/, 'Alice visible again');
+
+    teardown();
+};
+
+subtest 'search and filter execution transitions' => sub {
+    launch();
+    # Submit search for Bob
+    send_keys('/', 'B', 'o', 'b', 'Enter');
+    my $search_res = capture();
+    like($search_res, qr/Bob/, 'Bob found after search');
+
+    # Clear search
+    send_keys('/', 'Enter');
+    my $cleared_search = capture();
+    like($cleared_search, qr/Rows 1-/, 'clearing search restores standard status');
+
+    # Submit filter for Alice
+    send_keys('&', 'A', 'l', 'i', 'c', 'e', 'Enter');
+    my $filter_res = capture();
+    like($filter_res, qr/Alice/, 'Alice visible in filter');
+    unlike($filter_res, qr/Bob/, 'Bob hidden in filter');
+
+    # Clear filter
+    send_keys('&', 'Enter');
+    my $cleared_filter = capture();
+    like($cleared_filter, qr/Bob/, 'Bob restored after clearing filter');
+
+    teardown();
+};
+
 done_testing();
 
 
