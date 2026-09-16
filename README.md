@@ -28,7 +28,7 @@ E.g.:
 curl -o ~/bin/dless \
   https://raw.githubusercontent.com/evolarjun/dless/refs/heads/main/dless \
   && chmod +x ~/bin/dless \
-  && ln -s dless ~/bin/dl
+  && ln -s dless ~/bin/tl
 ```
 
 For convenient viewing of csv files I also add the following to my `.bash_profile`
