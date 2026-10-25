@@ -1295,6 +1295,7 @@ subtest 'parse_cli_args pure function' => sub {
     is($opts0->{csv}, 0, 'default csv mode is 0');
     is($opts0->{line_numbers}, 0, 'default line numbers is 0');
     is($opts0->{help}, 0, 'default help is 0');
+    is($opts0->{version}, 0, 'default version is 0');
     is_deeply($opts0->{files}, [], 'default files list is empty');
 
     # Delimiter flag -d and --delimiter
@@ -1334,6 +1335,15 @@ subtest 'parse_cli_args pure function' => sub {
     my ($opts8, $err8) = parse_cli_args('--help');
     is($err8, undef, '--help parsed without error');
     is($opts8->{help}, 1, '--help sets help to 1');
+
+    # Version flags -v and --version
+    my ($opts_v, $err_v) = parse_cli_args('-v');
+    is($err_v, undef, '-v parsed without error');
+    is($opts_v->{version}, 1, '-v sets version to 1');
+
+    my ($opts_ver, $err_ver) = parse_cli_args('--version');
+    is($err_ver, undef, '--version parsed without error');
+    is($opts_ver->{version}, 1, '--version sets version to 1');
 
     # File arguments preserved
     my ($opts9, $err9) = parse_cli_args('-d', ':', 'foo.tsv', 'bar.tsv');
@@ -1492,6 +1502,17 @@ subtest 'Bug 6: header remains visible for columns that are partially scrolled i
         qr/notes/,
         'header "notes" is still shown when viewing positions 10..49 of a 60-char column'
     );
+};
+
+# ---------------------------------------------------------------------------
+# Version option and message formatting
+# ---------------------------------------------------------------------------
+subtest 'version and usage reporting' => sub {
+    our $VERSION;
+    is($VERSION, '0.1', '$VERSION is 0.1');
+    is(format_version_message(), "dless 0.1\n", 'format_version_message returns expected string');
+    like(format_usage_message(), qr/-v,\s*--version/, 'format_usage_message documents -v, --version');
+    like(format_detailed_help(), qr/-v,\s*--version/, 'format_detailed_help documents -v, --version');
 };
 
 done_testing();

@@ -17,7 +17,9 @@ use List::Util qw(min max);
 use POSIX qw(ttyname);
 use File::Temp qw(tempfile);
 
-# ------ Constants ------------------------------
+# ------ Version & Constants ------------------------------
+our $VERSION = '0.1';
+
 use constant MAX_ANALYSIS_ROWS => 10_000;
 use constant H_SCROLL_STEP     => 10;
 
@@ -29,16 +31,21 @@ my $CLEAR_EOL = "\e[K";
 my $HOME      = "\e[H";
 
 # ------ Usage & Help ------------------------------
+sub format_version_message {
+    return "dless $VERSION\n";
+}
+
 sub format_usage_message {
     return <<"END";
 Tab-delimited or CSV file viewer.
 
-Usage: dless [-d DELIM | -c] [-N] [FILE]
-       cat FILE | dless [-d DELIM | -c] [-N]
+Usage: dless [-d DELIM | -c] [-N] [-v] [FILE]
+       cat FILE | dless [-d DELIM | -c] [-N] [-v]
 Options:
   -d, --delimiter DELIM  Field delimiter (default: tab)
   -c, --csv              Parse RFC 4180 CSV (removes quotes and unescapes data)
   -N                     Show line numbers
+  -v, --version          Show version number
   -h, --help             Show detailed help and interactive commands
 
 Keys:
@@ -49,8 +56,8 @@ END
 
 sub format_detailed_help {
     return <<"END";
-Usage: dless [-d DELIM | -c] [-N] [FILE]
-       cat FILE | dless [-d DELIM | -c] [-N]
+Usage: dless [-d DELIM | -c] [-N] [-v] [FILE]
+       cat FILE | dless [-d DELIM | -c] [-N] [-v]
 
 A tab-delimited or CSV file viewer with fixed-width columns and horizontal
 scrolling. Supports automatic decompression of gzip and zstd files.
@@ -59,6 +66,7 @@ Options:
   -d, --delimiter DELIM  Field delimiter (default: tab)
   -c, --csv              Parse RFC 4180 CSV (removes quotes and unescapes data)
   -N                     Show line numbers
+  -v, --version          Show version number
   -h, --help             Show this detailed help message
 
 Navigation Commands:
@@ -136,13 +144,15 @@ sub compile_regex {
 #   csv          => 0 or 1
 #   line_numbers => 0 or 1
 #   help         => 0 or 1
+#   version      => 0 or 1
 #   files        => arrayref of remaining arguments
 # On error, returns (undef, $error_msg).
 sub parse_cli_args {
     my (@args) = @_;
-    my ($delim, $csv, $help, $numbers);
+    my ($delim, $csv, $help, $numbers, $version);
     $numbers = 0;
     $help    = 0;
+    $version = 0;
     my $warn = '';
     my $ok;
     {
@@ -153,6 +163,7 @@ sub parse_cli_args {
             'c|csv'         => \$csv,
             'N|numbers!'    => \$numbers,
             'help|h'        => \$help,
+            'v|version'     => \$version,
         );
     }
     if (!$ok) {
@@ -172,6 +183,7 @@ sub parse_cli_args {
         csv          => $csv ? 1 : 0,
         line_numbers => $numbers ? 1 : 0,
         help         => $help ? 1 : 0,
+        version      => $version ? 1 : 0,
         files        => \@args,
     }, undef);
 }
@@ -1439,6 +1451,10 @@ sub _main {
             print STDERR "dless: $err\n";
         }
         usage();
+    }
+    if ($opts->{version}) {
+        print STDOUT format_version_message();
+        exit 0;
     }
     detailed_help() if $opts->{help};
 
