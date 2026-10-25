@@ -10,6 +10,10 @@ dless is a TUI interface for viewing tab-delimited data written in perl
 
 This project strictly follows Red/Green TDD
 
+## Version
+
+Increment the version any time a major change is made
+
 ## New feature ceremony
 
 Whenver a prompt asks to implement, build, or add a new feature: 
