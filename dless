@@ -431,12 +431,21 @@ sub start_search_status_msg {
 sub format_cell {
     my ($val, $width, $is_numeric) = @_;
     $val //= '';
-    if (length($val) > $width) {
-        $val = substr($val, 0, $width - 1) . '>';
+    $val =~ s/[\x00-\x1f]/ /g;
+    my $str = $val;
+    utf8::decode($str);
+    if (length($str) > $width) {
+        $str = substr($str, 0, $width - 1) . '>';
     }
-    return $is_numeric
-        ? sprintf("%${width}s",  $val)   # right-align
-        : sprintf("%-${width}s", $val);  # left-align
+    my $pad = $width - length($str);
+    my $res;
+    if ($pad > 0) {
+        $res = $is_numeric ? (' ' x $pad) . $str : $str . (' ' x $pad);
+    } else {
+        $res = $str;
+    }
+    utf8::encode($res);
+    return $res;
 }
 
 # Format a line number prefix for a row.
@@ -734,7 +743,26 @@ sub render_clipped_row {
         my $v_end   = min($cell_end, $h_offset + $width - 1);
 
         if ($v_start <= $v_end) {
-            my $cell_vis = substr($cell, $v_start - $cell_start, $v_end - $v_start + 1);
+            my $cell_vis;
+            if ($is_hidden) {
+                $cell_vis = '|';
+            } else {
+                my $v_offset_in_cell = $v_start - $cell_start;
+                my $v_len_in_cell    = $v_end - $v_start + 1;
+
+                my $str = $val;
+                $str =~ s/[\x00-\x1f]/ /g;
+                utf8::decode($str);
+                if (length($str) > $col_w) {
+                    $str = substr($str, 0, $col_w - 1) . '>';
+                }
+                my $pad = $col_w - length($str);
+                my $full_cell = $is_numeric_ref->[$ci] ? (' ' x $pad) . $str : $str . (' ' x $pad);
+
+                my $sub_cell = substr($full_cell, $v_offset_in_cell, $v_len_in_cell);
+                utf8::encode($sub_cell);
+                $cell_vis = $sub_cell;
+            }
 
             if (defined $search_regex && $overlapping_cols{$ci}) {
                 if ($row_idx == $active_row && $ci == $active_col) {
@@ -745,7 +773,9 @@ sub render_clipped_row {
             } else {
                 $output .= $cell_vis;
             }
-            $printed_len += length($cell_vis);
+            my $t = $cell_vis;
+            utf8::decode($t);
+            $printed_len += length($t);
         }
 
         $curr_pos += $col_w;
@@ -830,6 +860,93 @@ sub build_colnum_line {
     return $line;
 }
 
+# Render the clipped header row ensuring column labels remain visible in the viewport.
+sub render_clipped_header {
+    my ($header_ref, $col_widths_ref, $is_numeric_ref, $h_offset, $width, $is_hidden_ref) = @_;
+    $h_offset //= 0;
+    $width    //= 80;
+
+    my $output      = '';
+    my $printed_len = 0;
+    my $curr_pos    = 0;
+
+    for my $ci (0 .. $#$col_widths_ref) {
+        last if $printed_len >= $width;
+
+        my $col_w     = $col_widths_ref->[$ci];
+        my $val       = $header_ref->[$ci] // '';
+        my $is_hidden = ($is_hidden_ref && $is_hidden_ref->[$ci]);
+
+        my $cell_start = $curr_pos;
+        my $cell_end   = $curr_pos + $col_w - 1;
+
+        my $v_start = max($cell_start, $h_offset);
+        my $v_end   = min($cell_end, $h_offset + $width - 1);
+
+        if ($v_start <= $v_end) {
+            my $vis_w = $v_end - $v_start + 1;
+            my $cell_vis;
+            if ($is_hidden) {
+                $cell_vis = '|';
+            } else {
+                my $v_offset_in_cell = $v_start - $cell_start;
+                my $str = $val;
+                $str =~ s/[\x00-\x1f]/ /g;
+                utf8::decode($str);
+
+                # If this column is partially scrolled off to the left ($v_offset_in_cell > 0),
+                # keep the header label visible at the left of the visible span.
+                # If it is numeric and fully visible or scrolled, left-align it or position it
+                # within the cell so it doesn't disappear to the far right.
+                my $full_cell;
+                if ($v_offset_in_cell > 0) {
+                    if (length($str) > $col_w) {
+                        $str = substr($str, 0, $col_w - 1) . '>';
+                    }
+                    my $pad = $col_w - length($str);
+                    $full_cell = (' ' x $v_offset_in_cell) . $str . (' ' x max(0, $pad - $v_offset_in_cell));
+                    if (length($full_cell) > $col_w) {
+                        $full_cell = substr($full_cell, 0, $col_w);
+                    }
+                } else {
+                    if (length($str) > $col_w) {
+                        $str = substr($str, 0, $col_w - 1) . '>';
+                    }
+                    my $pad = $col_w - length($str);
+                    $full_cell = $is_numeric_ref->[$ci] ? (' ' x $pad) . $str : $str . (' ' x $pad);
+                }
+
+                my $sub_cell = substr($full_cell, $v_offset_in_cell, $vis_w);
+                utf8::encode($sub_cell);
+                $cell_vis = $sub_cell;
+            }
+            $output .= $cell_vis;
+            my $t = $cell_vis;
+            utf8::decode($t);
+            $printed_len += length($t);
+        }
+
+        $curr_pos += $col_w;
+
+        if ($ci < $#$col_widths_ref) {
+            my $next_hidden = ($is_hidden_ref && $is_hidden_ref->[$ci + 1]);
+            unless ($is_hidden && $next_hidden) {
+                my $sep_pos = $curr_pos;
+                if ($sep_pos >= $h_offset && $printed_len < $width) {
+                    $output .= ' ';
+                    $printed_len++;
+                }
+                $curr_pos++;
+            }
+        }
+    }
+
+    if ($printed_len < $width) {
+        $output .= ' ' x ($width - $printed_len);
+    }
+    return $output;
+}
+
 # Determine which columns overlap the horizontal viewport [h_offset, h_offset + width - 1].
 # $col_widths_ref : arrayref of column widths
 # $is_hidden_ref  : arrayref of column hidden flags
@@ -908,7 +1025,7 @@ sub adjust_column_widths {
             }
         }
 
-        # Expand default full widths from visible fields
+        # Expand default full widths from visible fields if any are wider
         for my $i (0 .. $n_cols - 1) {
             if ($vis_cols_ref && $vis_cols_ref->{$i} && defined $vis_max_w_ref) {
                 my $vw = $vis_max_w_ref->[$i] // 0;
@@ -919,7 +1036,8 @@ sub adjust_column_widths {
         if ($all_full) {
             for my $i (0 .. $n_cols - 1) {
                 my $hw = length($header_ref->[$i] // '');
-                $curr_widths_ref->[$i] = max(1, $hw);
+                my $col_num_w = length($i + 1);
+                $curr_widths_ref->[$i] = max(1, $hw, $col_num_w);
                 $is_hidden_ref->[$i]   = 0;
             }
             return (1, "Shrunk all columns to header width");
@@ -976,7 +1094,8 @@ sub adjust_column_widths {
                 $is_hidden_ref->[$ci]   = 0;
             } else {
                 my $hw = length($header_ref->[$ci] // '');
-                $curr_widths_ref->[$ci] = max(1, $hw);
+                my $col_num_w = length($ci + 1);
+                $curr_widths_ref->[$ci] = max(1, $hw, $col_num_w);
                 $is_hidden_ref->[$ci]   = 0;
             }
         }
@@ -988,14 +1107,17 @@ sub adjust_column_widths {
 # Clip a content string at $h_offset and pad/truncate to exactly $width chars.
 sub clip_content {
     my ($content, $h_offset, $width) = @_;
-    my $len     = length($content);
-    my $visible = ($h_offset < $len) ? substr($content, $h_offset) : '';
+    my $str = $content // '';
+    utf8::decode($str);
+    my $len     = length($str);
+    my $visible = ($h_offset < $len) ? substr($str, $h_offset) : '';
     my $vlen    = length($visible);
     if ($vlen < $width) {
         $visible .= ' ' x ($width - $vlen);
     } elsif ($vlen > $width) {
         $visible = substr($visible, 0, $width);
     }
+    utf8::encode($visible);
     return $visible;
 }
 
@@ -1026,24 +1148,30 @@ sub compute_col_widths {
 
 # Determine which columns are numeric.
 # A column is numeric if every non-empty value in the scanned rows matches a
-# number pattern (int, float, or scientific notation, with optional sign).
+# number pattern (int, float, or scientific notation, with optional sign),
+# and there is at least one non-empty value.
 # $rows_ref : arrayref of row arrayrefs (data rows only)
 # $n_cols   : number of columns
 # $limit    : max rows to scan (undef = all)
 # Returns arrayref of booleans (1 = numeric, 0 = text).
 sub detect_numeric {
     my ($rows_ref, $n_cols, $limit) = @_;
-    my @flags = (1) x $n_cols;
+    my @flags   = (1) x $n_cols;
+    my @has_val = (0) x $n_cols;
     my $max_ri = defined $limit ? min($limit - 1, $#$rows_ref) : $#$rows_ref;
     for my $ri (0 .. $max_ri) {
         my $row = $rows_ref->[$ri];
         for my $ci (0 .. $n_cols - 1) {
-            next unless $flags[$ci];
             my $val = $row->[$ci] // '';
             next if $val eq '';
+            $has_val[$ci] = 1;
+            next unless $flags[$ci];
             $flags[$ci] = 0
                 unless $val =~ /^\s*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\s*$/;
         }
+    }
+    for my $ci (0 .. $n_cols - 1) {
+        $flags[$ci] = 0 unless $has_val[$ci];
     }
     return \@flags;
 }
@@ -1651,8 +1779,7 @@ sub _main {
         }
 
         # Line 2: header (bold)
-        my $header_raw     = build_row_line($header, $col_widths_ref, $is_numeric_ref, $is_hidden_ref);
-        my $header_clipped = clip_content($header_raw, $h_offset, $content_w);
+        my $header_clipped = render_clipped_header($header, $col_widths_ref, $is_numeric_ref, $h_offset, $content_w, $is_hidden_ref);
         $output .= $BOLD . $header_ln . $header_clipped . $RESET . $CLEAR_EOL . "\n";
 
         # Data rows

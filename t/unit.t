@@ -1357,5 +1357,142 @@ subtest 'parse_cli_args pure function' => sub {
     like($err12, qr/Option d requires an argument/i, 'missing argument error message returned');
 };
 
+# ---------------------------------------------------------------------------
+# Bug 1: Embedded control characters (\r, \t, \n) in cells or headers
+# ---------------------------------------------------------------------------
+subtest 'Bug 1: control characters (\r, \t, \n) in cells are sanitized before rendering' => sub {
+    my $cell_cr  = format_cell("confidence\r", 12, 0);
+    my $cell_tab = format_cell("foo\tbar",     10, 0);
+    my $cell_nl  = format_cell("line1\nline2", 12, 0);
+
+    unlike($cell_cr,  qr/\r/, 'rendered cell must not contain raw carriage return (\r)');
+    unlike($cell_tab, qr/\t/, 'rendered cell must not contain raw tab (\t)');
+    unlike($cell_nl,  qr/\n/, 'rendered cell must not contain raw newline (\n)');
+
+    my $clipped = render_clipped_row(
+        ["val\rwith\rcr", "tab\there"],
+        [15, 10],
+        [0, 0],
+        0, 26, 0, undef, undef, "\t", [0, 0]
+    );
+    unlike($clipped, qr/[\r\t\n]/, 'render_clipped_row output must not contain raw \r, \t, or \n');
+};
+
+# ---------------------------------------------------------------------------
+# Bug 2: Multi-byte UTF-8 characters break column alignment and clipping
+# ---------------------------------------------------------------------------
+subtest 'Bug 2: multi-byte UTF-8 characters preserve visual column alignment and valid UTF-8' => sub {
+    # "cafe" with UTF-8 e-acute: 4 visual chars, 5 UTF-8 bytes
+    my $utf8_word = "caf\xc3\xa9";
+    my $header    = ['drink', 'price'];
+    my @rows      = (
+        [$utf8_word, '5.00'],
+        ['water',    '2.00'],
+    );
+
+    my $col_widths = [8, 5];
+    my $is_numeric = [0, 1];
+
+    my $header_line = build_row_line($header,   $col_widths, $is_numeric);
+    my $utf8_line   = build_row_line($rows[0],  $col_widths, $is_numeric);
+
+    my $str_utf8 = $utf8_line;
+    utf8::decode($str_utf8);
+    my $str_hdr = $header_line;
+    utf8::decode($str_hdr);
+
+    is(
+        length($str_utf8),
+        length($str_hdr),
+        'row with UTF-8 has same visual character width as header row'
+    );
+
+    my $hdr_col2_pos  = index($str_hdr, 'price');
+    my $utf8_col2_pos = index($str_utf8, ' 5.00');
+
+    is($utf8_col2_pos, $hdr_col2_pos, 'column 2 in UTF-8 row aligns visually with header column 2');
+
+    my $clipped = render_clipped_row($rows[0], $col_widths, $is_numeric, 4, 10, 0, undef, undef, "\t", [0, 0]);
+    my $decoded = $clipped;
+    my $valid_utf8 = utf8::decode($decoded);
+    ok($valid_utf8, 'clipping at h_offset=4 does not slice a multi-byte UTF-8 character in half');
+};
+
+# ---------------------------------------------------------------------------
+# Bug 3: Empty columns in sampled rows are misclassified as numeric
+# ---------------------------------------------------------------------------
+subtest 'Bug 3: detect_numeric treats columns with no non-empty values as text (left-aligned)' => sub {
+    my @rows = (
+        ['10', '', 'Alice'],
+        ['20', '', 'Bob'],
+    );
+    my $flags = detect_numeric(\@rows, 3, undef);
+
+    is($flags->[0], 1, 'col 0 (numbers) is numeric');
+    is($flags->[1], 0, 'col 1 (all empty) should default to text (0), not numeric (1)');
+    is($flags->[2], 0, 'col 2 (strings) is text');
+};
+
+# ---------------------------------------------------------------------------
+# Bug 4: Empty 'w' updates orig_widths when visible rows have wider fields
+# than initial orig_widths
+# ---------------------------------------------------------------------------
+subtest 'Bug 4: adjust_column_widths empty input expands orig_widths when visible fields exceed sample' => sub {
+    my $header      = ['id', 'description'];
+    my $orig_widths = [4, 11];
+    my $curr_widths = [4, 11];
+    my $is_hidden   = [0, 0];
+    my $vis_cols    = { 0 => 1, 1 => 1 };
+    my $vis_max_w   = [4, 30];
+
+    my ($ok, $msg) = adjust_column_widths(
+        $orig_widths, $curr_widths, $is_hidden, $header, '', 2, $vis_cols, $vis_max_w
+    );
+
+    ok($ok, 'adjust_column_widths succeeded');
+    is($orig_widths->[1], 30, 'col 1 orig_width expanded to 30 from visible row');
+    is_deeply($curr_widths, [2, 11], 'columns shrunk to header/colnum widths on first empty w');
+
+    # Next empty w restores to expanded full width 30
+    adjust_column_widths($orig_widths, $curr_widths, $is_hidden, $header, '', 2, $vis_cols, $vis_max_w);
+    is($curr_widths->[1], 30, 'subsequent empty w restores col 1 to expanded full width 30');
+};
+
+# ---------------------------------------------------------------------------
+# Bug 5: Shrinking columns to header width via 'w' truncates colnums to '>'
+# ---------------------------------------------------------------------------
+subtest 'Bug 5: shrinking columns via w preserves enough width to display column numbers without truncation' => sub {
+    my $n_cols      = 12;
+    my $header      = [map { "c" } (1 .. $n_cols)];
+    my $orig_widths = [(5) x $n_cols];
+    my $curr_widths = [(5) x $n_cols];
+    my $is_hidden   = [(0) x $n_cols];
+    my $is_numeric  = [(0) x $n_cols];
+
+    adjust_column_widths($orig_widths, $curr_widths, $is_hidden, $header, '', $n_cols);
+
+    my $colnum_line = build_colnum_line($curr_widths, $is_numeric, 1, $is_hidden);
+    unlike($colnum_line, qr/>/, 'column numbers 10..12 are not truncated with ">" after shrinking to header width');
+    like($colnum_line, qr/\b10\b.*\b11\b.*\b12\b/, 'column numbers 10, 11, 12 are fully readable');
+};
+
+# ---------------------------------------------------------------------------
+# Bug 6: Header remains visible when horizontally scrolling a wide column
+# ---------------------------------------------------------------------------
+subtest 'Bug 6: header remains visible for columns that are partially scrolled in the viewport' => sub {
+    my $header     = ['notes', 'status'];
+    my $col_widths = [60, 10];
+    my $is_numeric = [0, 0];
+    my $is_hidden  = [0, 0];
+
+    my $header_clipped = render_clipped_header($header, $col_widths, $is_numeric, 10, 40, $is_hidden);
+
+    like(
+        $header_clipped,
+        qr/notes/,
+        'header "notes" is still shown when viewing positions 10..49 of a 60-char column'
+    );
+};
+
 done_testing();
 
