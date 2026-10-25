@@ -302,66 +302,75 @@ subtest 'format_option_prompt' => sub {
     is(length(strip_ansi($on_prompt)), 80, 'padded to term_cols width');
 };
 
-subtest 'find_matches' => sub {
-    my @rows = (
-        ['Alice', '30', '98.5'],
-        ['Bob',   '250', '7'],
-        ['Carol', '42', '88.3333'],
-    );
-    my $regex = qr/a/i;
-    my $matches = find_matches(\@rows, 3, $regex);
-    is_deeply($matches, [ [0, 0], [2, 0] ], 'finds case-insensitive matching cells');
+subtest 'find_row_matching_cols' => sub {
+    my $row = ['Alice', '30', '98.5'];
+    my $cols = find_row_matching_cols($row, 3, qr/a/i);
+    is_deeply($cols, [0], 'finds case-insensitive matching col');
 
-    # Multi-field match across tab delimiter
-    my $multi_match = find_matches(\@rows, 3, qr/Alice\t30/);
-    is_deeply($multi_match, [ [0, 0] ], 'matches across tab delimiter, starting at col 0');
+    my $multi = find_row_matching_cols($row, 3, qr/Alice\t30/);
+    is_deeply($multi, [0], 'matches across tab delimiter, starting at col 0');
 
-    # Multi-field match starting in col 1 across delimiter
-    my $multi_match2 = find_matches(\@rows, 3, qr/30\t98\.5/);
-    is_deeply($multi_match2, [ [0, 1] ], 'matches starting in col 1 across delimiter');
+    my $multi2 = find_row_matching_cols($row, 3, qr/30\t98\.5/);
+    is_deeply($multi2, [1], 'matches starting in col 1 across delimiter');
 
-    # Custom delimiter
-    my $csv_rows = [ ['Alice', '30'], ['Bob', '25'] ];
-    my $csv_matches = find_matches($csv_rows, 2, qr/Alice,30/, ',');
-    is_deeply($csv_matches, [ [0, 0] ], 'matches multi-field pattern with custom delimiter');
+    my $csv_cols = find_row_matching_cols(['Alice', '30'], 2, qr/Alice,30/, ',');
+    is_deeply($csv_cols, [0], 'matches with custom delimiter');
 
-    # Deduplication per row
-    my $dup_rows = [ ['cat', 'cat', 'dog'] ];
-    my $dup_matches = find_matches($dup_rows, 3, qr/cat/);
-    is_deeply($dup_matches, [ [0, 0], [0, 1] ], 'finds matches in col 0 and col 1');
+    my $dup_cols = find_row_matching_cols(['cat', 'cat', 'dog'], 3, qr/cat/);
+    is_deeply($dup_cols, [0, 1], 'finds matches in col 0 and 1');
 
-    my $dup_rows_same_col = [ ['cat cat', 'dog'] ];
-    my $dup_same_col = find_matches($dup_rows_same_col, 2, qr/cat/);
-    is_deeply($dup_same_col, [ [0, 0] ], 'deduplicates multiple matches in the same cell');
+    my $dup_same = find_row_matching_cols(['cat cat', 'dog'], 2, qr/cat/);
+    is_deeply($dup_same, [0], 'deduplicates multiple matches in same cell');
+
+    is_deeply(find_row_matching_cols([], 0, qr/cat/), [], 'empty row returns empty');
+    is_deeply(find_row_matching_cols(undef, 0, qr/cat/), [], 'undef row returns empty');
+    is_deeply(find_row_matching_cols($row, 3, undef), [], 'undef regex returns empty');
 };
 
-subtest 'filter_rows' => sub {
-    my @rows = (
-        ['Alice', '30', 'New York'],
-        ['Bob',   '25', 'Los Angeles'],
-        ['Carol', '42', 'Chicago'],
-    );
+subtest 'filter_indexed_rows' => sub {
+    my $tsv = "header1\theader2\theader3\nAlice\t30\tNew York\nBob\t25\tLos Angeles\nCarol\t42\tChicago\n";
+    open(my $in_fh, '+<', \$tsv) or die $!;
+    binmode($in_fh);
+    my ($h, $offsets, $n_rows, $n_cols) = index_stream($in_fh, undef, 0, "\t");
 
-    my $all = filter_rows(\@rows, undef);
-    is_deeply($all, [0, 1, 2], 'undef regex returns all row indices');
+    # 1. undef regex returns undef (all rows visible, 0 bytes)
+    my $all = filter_indexed_rows($in_fh, $offsets, $n_rows, undef, 0, "\t");
+    is($all, undef, 'undef regex returns undef');
+    is(visible_row_count($n_rows, $all), 3, 'visible_row_count is 3 when unfiltered');
 
-    my $filtered = filter_rows(\@rows, qr/Alice/);
-    is_deeply($filtered, [0], 'filters rows matching regex');
+    # 2. Matching regex
+    my $f1 = filter_indexed_rows($in_fh, $offsets, $n_rows, qr/Alice/, 0, "\t");
+    is(visible_row_count($n_rows, $f1), 1, '1 row matches Alice');
+    is(visible_to_data_row(0, $f1), 0, 'vis row 0 maps to data row 0');
 
-    my $city_match = filter_rows(\@rows, qr/Chicago/);
-    is_deeply($city_match, [2], 'filters rows matching cell in another column');
+    # 3. Another column match
+    my $f2 = filter_indexed_rows($in_fh, $offsets, $n_rows, qr/Chicago/, 0, "\t");
+    is(visible_row_count($n_rows, $f2), 1, '1 row matches Chicago');
+    is(visible_to_data_row(0, $f2), 2, 'vis row 0 maps to data row 2');
 
-    my $nomatch = filter_rows(\@rows, qr/NonExistent/);
-    is_deeply($nomatch, [], 'no match returns empty arrayref');
+    # 4. Multi-field regex across tab delimiter
+    my $f3 = filter_indexed_rows($in_fh, $offsets, $n_rows, qr/Alice\t30/, 0, "\t");
+    is(visible_row_count($n_rows, $f3), 1, 'matches across column boundary');
+    is(visible_to_data_row(0, $f3), 0, 'data row 0');
 
-    # Multi-field regex match across tab delimiter
-    my $multi_filter = filter_rows(\@rows, qr/Alice\t30/);
-    is_deeply($multi_filter, [0], 'filters rows matching across column boundary');
+    # 5. Non-matching regex returns empty packed string
+    my $nomatch = filter_indexed_rows($in_fh, $offsets, $n_rows, qr/NonExistent/, 0, "\t");
+    is(visible_row_count($n_rows, $nomatch), 0, 'no match returns 0 visible rows');
 
-    # Custom delimiter filter
-    my $csv_rows = [ ['Alice', '30'], ['Bob', '25'] ];
-    my $csv_filter = filter_rows($csv_rows, qr/Bob,25/, ',');
-    is_deeply($csv_filter, [1], 'filters rows matching custom delimiter');
+    # 6. CSV fixture mode
+    my $csv_fixture = "$Bin/fixtures/quoted.csv";
+    open(my $cfh, '<', $csv_fixture) or die $!;
+    binmode($cfh);
+    my ($ch, $coff, $cnr) = index_stream($cfh, undef, 1, ',');
+    my $f_csv = filter_indexed_rows($cfh, $coff, $cnr, qr/Widget "Pro"/, 1, ',');
+    is(visible_row_count($cnr, $f_csv), 1, 'CSV filter matches unescaped quote');
+    is(visible_to_data_row(0, $f_csv), 1, 'matches data row 1');
+
+    # Multi-line field in CSV
+    my $f_csv_ml = filter_indexed_rows($cfh, $coff, $cnr, qr/Multi-line\\ngadget/, 1, ',');
+    is(visible_row_count($cnr, $f_csv_ml), 1, 'CSV filter matches multiline field with literal \\n');
+    is(visible_to_data_row(0, $f_csv_ml), 2, 'matches data row 2');
+    close $cfh;
 };
 
 subtest 'render_clipped_row --- multi-field match highlighting' => sub {
@@ -380,37 +389,70 @@ subtest 'render_clipped_row --- multi-field match highlighting' => sub {
     unlike($rendered, qr/98\.5.*\e\[/, 'non-overlapping col 2 is not highlighted');
 };
 
-subtest 'find_next_match_index --- forward navigation & wrap' => sub {
-    my $matches = [ [0, 1], [1, 1], [2, 1] ];
+subtest 'find_next_match' => sub {
+    my $tsv = "name\tage\tscore\nAlice\t30\t98.5\nBob\t25\t7\nCarol\t42\t88.3333\n";
+    open(my $in_fh, '+<', \$tsv) or die $!;
+    binmode($in_fh);
+    my ($h, $offsets, $n_rows, $n_cols) = index_stream($in_fh, undef, 0, "\t");
 
-    # From (-1, -1) or start, next is (0, 1) -> index 0
-    my ($idx1, $wrap1) = find_next_match_index($matches, -1, -1, 1);
-    is($idx1, 0, 'finds first match after start');
+    # Forward search from start (curr_vis_row = 0, curr_col = -1, dir = 1)
+    # qr/a/i matches Alice (row 0, col 0) and Carol (row 2, col 0)
+    my ($r1, $c1, $v1, $wrap1) = find_next_match($in_fh, $offsets, $n_rows, undef, $n_cols, qr/a/i, 0, "\t", 0, -1, 1);
+    is($r1, 0, 'first match row 0');
+    is($c1, 0, 'first match col 0');
+    is($v1, 0, 'vis row 0');
     is($wrap1, 0, 'not wrapped');
 
-    # From (0, 1), next is (1, 1) -> index 1
-    my ($idx2, $wrap2) = find_next_match_index($matches, 0, 1, 1);
-    is($idx2, 1, 'finds next match after (0,1)');
+    # Forward search from (row 0, col 0) -> next match is Carol (row 2, col 0)
+    my ($r2, $c2, $v2, $wrap2) = find_next_match($in_fh, $offsets, $n_rows, undef, $n_cols, qr/a/i, 0, "\t", 0, 0, 1);
+    is($r2, 2, 'next match row 2');
+    is($c2, 0, 'next match col 0');
+    is($v2, 2, 'vis row 2');
     is($wrap2, 0, 'not wrapped');
 
-    # From (2, 1), next wraps to (0, 1) -> index 0
-    my ($idx3, $wrap3) = find_next_match_index($matches, 2, 1, 1);
-    is($idx3, 0, 'wraps forward to first match');
+    # Forward search from (row 2, col 0) -> wraps around to Alice (row 0, col 0)
+    my ($r3, $c3, $v3, $wrap3) = find_next_match($in_fh, $offsets, $n_rows, undef, $n_cols, qr/a/i, 0, "\t", 2, 0, 1);
+    is($r3, 0, 'wrapped match row 0');
+    is($c3, 0, 'col 0');
+    is($v3, 0, 'vis row 0');
     is($wrap3, 1, 'wrapped flag set');
-};
 
-subtest 'find_next_match_index --- backward navigation & wrap' => sub {
-    my $matches = [ [0, 1], [1, 1], [2, 1] ];
+    # Backward search from (row 2, col 0) -> previous match is Alice (row 0, col 0)
+    my ($br1, $bc1, $bv1, $bwrap1) = find_next_match($in_fh, $offsets, $n_rows, undef, $n_cols, qr/a/i, 0, "\t", 2, 0, -1);
+    is($br1, 0, 'backward match row 0');
+    is($bc1, 0, 'backward col 0');
+    is($bv1, 0, 'vis row 0');
+    is($bwrap1, 0, 'not wrapped');
 
-    # From (2, 1), prev is (1, 1) -> index 1
-    my ($idx1, $wrap1) = find_next_match_index($matches, 2, 1, -1);
-    is($idx1, 1, 'finds previous match before (2,1)');
-    is($wrap1, 0, 'not wrapped');
+    # Backward search from (row 0, col 0) -> wraps around to Carol (row 2, col 0)
+    my ($br2, $bc2, $bv2, $bwrap2) = find_next_match($in_fh, $offsets, $n_rows, undef, $n_cols, qr/a/i, 0, "\t", 0, 0, -1);
+    is($br2, 2, 'backward wrapped match row 2');
+    is($bc2, 0, 'col 0');
+    is($bv2, 2, 'vis row 2');
+    is($bwrap2, 1, 'backward wrapped flag set');
 
-    # From (0, 1), prev wraps to (2, 1) -> index 2
-    my ($idx2, $wrap2) = find_next_match_index($matches, 0, 1, -1);
-    is($idx2, 2, 'wraps backward to last match');
-    is($wrap2, 1, 'wrapped flag set');
+    # Multi-column in same row: 'cat\tcat\tdog'
+    my $tsv_cat = "c1\tc2\tc3\ncat\tcat\tdog\n";
+    open(my $cat_fh, '+<', \$tsv_cat) or die $!;
+    binmode($cat_fh);
+    my ($ch, $coff, $cnr, $cnc) = index_stream($cat_fh, undef, 0, "\t");
+
+    # Start before col 0 -> gets col 0
+    my ($cr1, $cc1) = find_next_match($cat_fh, $coff, $cnr, undef, $cnc, qr/cat/, 0, "\t", 0, -1, 1);
+    is($cc1, 0, 'first col 0');
+    # From col 0 -> advances to col 1 in same row
+    my ($cr2, $cc2) = find_next_match($cat_fh, $coff, $cnr, undef, $cnc, qr/cat/, 0, "\t", 0, 0, 1);
+    is($cc2, 1, 'next col in same row is col 1');
+
+    # Searching with filter active: only row 2 (Carol) is visible
+    my $filtered = pack('Q', 2);
+    my ($fr1, $fc1, $fv1, $fwrap1) = find_next_match($in_fh, $offsets, $n_rows, $filtered, $n_cols, qr/a/i, 0, "\t", 0, -1, 1);
+    is($fr1, 2, 'filtered search matches Carol');
+    is($fv1, 0, 'vis row is 0 (the only visible row)');
+
+    # Non-matching regex
+    my ($nr, $nc, $nv, $nw) = find_next_match($in_fh, $offsets, $n_rows, undef, $n_cols, qr/nonexistent/, 0, "\t", 0, -1, 1);
+    is($nr, undef, 'no match returns undef');
 };
 
 subtest 'render_clipped_row' => sub {
@@ -1049,22 +1091,109 @@ subtest 'get_visible_column_indices pure function' => sub {
     is_deeply($vis4, { 3 => 1 }, 'col 3 correctly located after adjacent hidden columns');
 };
 
+subtest 'packed 64-bit integer helpers' => sub {
+    is(packed_count(undef), 0, 'packed_count on undef is 0');
+    is(packed_count(''), 0, 'packed_count on empty string is 0');
+    is(packed_count('1234567'), 0, 'packed_count on < 8 bytes is 0');
+
+    my $packed = pack('Q', 100) . pack('Q', 500) . pack('Q', 0);
+    is(packed_count($packed), 3, 'packed_count returns 3 for 24 bytes');
+
+    is(packed_get($packed, 0), 100, 'packed_get index 0');
+    is(packed_get($packed, 1), 500, 'packed_get index 1');
+    is(packed_get($packed, 2), 0,   'packed_get index 2');
+    is(packed_get($packed, 3), undef, 'packed_get index 3 out of bounds');
+    is(packed_get($packed, -1), undef, 'packed_get negative index returns undef');
+    is(packed_get(undef, 0), undef, 'packed_get on undef returns undef');
+
+    # visible_row_count and visible_to_data_row
+    is(visible_row_count(10, undef), 10, 'visible_row_count unfiltered');
+    is(visible_row_count(10, $packed), 3, 'visible_row_count with filter');
+
+    is(visible_to_data_row(0, undef), 0, 'visible_to_data_row unfiltered 0 -> 0');
+    is(visible_to_data_row(5, undef), 5, 'visible_to_data_row unfiltered 5 -> 5');
+    is(visible_to_data_row(0, $packed), 100, 'visible_to_data_row filtered 0 -> 100');
+    is(visible_to_data_row(1, $packed), 500, 'visible_to_data_row filtered 1 -> 500');
+    is(visible_to_data_row(3, $packed), undef, 'visible_to_data_row filtered out of bounds');
+};
+
+subtest 'parse_row_line' => sub {
+    is_deeply(parse_row_line("a\tb\tc\n", undef, 0, "\t"), ['a', 'b', 'c'], 'TSV parsing');
+    is_deeply(parse_row_line("a,b,c\r\n", undef, 0, ","), ['a', 'b', 'c'], 'custom delimiter parsing');
+    is_deeply(parse_row_line(undef, undef, 0, "\t"), [], 'undef line returns empty arrayref');
+
+    # CSV mode
+    my @extra = ("bar\",baz\n");
+    my $csv = parse_row_line("1,\"foo\n", sub { shift @extra }, 1, ',');
+    is_deeply($csv, ['1', "foo\\nbar", 'baz'], 'CSV mode with multiline field');
+};
+
+subtest 'index_stream and read_indexed_row' => sub {
+    require File::Temp;
+    # 1. Direct seekable input (sink_fh = undef)
+    my $tsv_content = "header1\theader2\theader3\nAlice\t30\tNYC\nBob\t25\tLA\nCarol\t42\tChicago\n";
+    open(my $in_fh, '+<', \$tsv_content) or die "Cannot open scalar fh: $!";
+    binmode($in_fh);
+
+    my ($header, $offsets, $n_rows, $n_cols, $sample_rows) = index_stream($in_fh, undef, 0, "\t", 10_000);
+    is_deeply($header, ['header1', 'header2', 'header3'], 'header parsed correctly');
+    is($n_rows, 3, '3 data rows indexed');
+    is($n_cols, 3, '3 columns detected');
+    is(packed_count($offsets), 3, 'offsets string has 3 entries');
+    is(scalar(@$sample_rows), 3, 'sample rows captured');
+
+    # Read rows out of order
+    my $row1 = read_indexed_row($in_fh, $offsets, 1, 0, "\t");
+    is_deeply($row1, ['Bob', '25', 'LA'], 'read row 1 (Bob)');
+    my $row0 = read_indexed_row($in_fh, $offsets, 0, 0, "\t");
+    is_deeply($row0, ['Alice', '30', 'NYC'], 'read row 0 (Alice)');
+    my $row2 = read_indexed_row($in_fh, $offsets, 2, 0, "\t");
+    is_deeply($row2, ['Carol', '42', 'Chicago'], 'read row 2 (Carol)');
+    is(read_indexed_row($in_fh, $offsets, 3, 0, "\t"), undef, 'out of bounds row returns undef');
+
+    # 2. Piped/streamed input with sink_fh
+    open(my $pipe_mock, '<', \$tsv_content) or die $!;
+    binmode($pipe_mock);
+    my $sink_fh = File::Temp::tempfile(UNLINK => 1);
+    binmode($sink_fh);
+
+    my ($h2, $off2, $nr2, $nc2, $s2) = index_stream($pipe_mock, $sink_fh, 0, "\t", 2);
+    is_deeply($h2, ['header1', 'header2', 'header3'], 'sink header parsed');
+    is($nr2, 3, 'sink 3 data rows');
+    is(scalar(@$s2), 2, 'max_analysis_rows = 2 limited sample rows to 2');
+
+    seek($sink_fh, 0, 0);
+    my $r_sink = read_indexed_row($sink_fh, $off2, 0, 0, "\t");
+    is_deeply($r_sink, ['Alice', '30', 'NYC'], 'read from sink_fh row 0');
+
+    # 3. CSV file with multi-line field
+    my $csv_fixture = "$Bin/fixtures/quoted.csv";
+    open(my $cfh, '<', $csv_fixture) or die $!;
+    binmode($cfh);
+    my ($csv_h, $csv_off, $csv_nr, $csv_nc, $csv_s) = index_stream($cfh, undef, 1, ',', 10_000);
+    is_deeply($csv_h, ['id', 'name', 'desc', 'price'], 'CSV header');
+    is($csv_nr, 4, 'CSV fixture has 4 data rows');
+    is(packed_count($csv_off), 4, '4 CSV offsets');
+
+    my $csv_r2 = read_indexed_row($cfh, $csv_off, 2, 1, ',');
+    is_deeply($csv_r2, ['3', 'Gadget', "Multi-line\\ngadget", '49.50'], 'read multi-line CSV row');
+    my $csv_r3 = read_indexed_row($cfh, $csv_off, 3, 1, ',');
+    is_deeply($csv_r3, ['4', 'Gadget Pro', 'Another gadget', '19.99'], 'read row after multi-line CSV row');
+    close $cfh;
+};
+
 subtest 'get_visible_field_max_widths pure function' => sub {
-    my $data = [
+    my $vis_rows = [
         ['Alice', 'Engineering and Architecture', '99.5'],
         ['Bob',   'Sales',                         '72.0'],
-        ['Carol', 'Human Resources Operations',    '88.3'],
     ];
-    # Visible rows 0 and 1
-    my $w1 = get_visible_field_max_widths($data, [0, 1], 3);
-    is_deeply($w1, [5, 28, 4], 'max widths across rows 0 and 1');
+    my $w1 = get_visible_field_max_widths($vis_rows, 3);
+    is_deeply($w1, [5, 28, 4], 'max widths across visible rows');
 
-    # Visible row 1 only
-    my $w2 = get_visible_field_max_widths($data, [1], 3);
-    is_deeply($w2, [3, 5, 4], 'max widths for row 1');
+    my $w2 = get_visible_field_max_widths([$vis_rows->[1]], 3);
+    is_deeply($w2, [3, 5, 4], 'max widths for single visible row');
 
-    # Empty visible rows
-    my $w3 = get_visible_field_max_widths($data, [], 3);
+    my $w3 = get_visible_field_max_widths([], 3);
     is_deeply($w3, [0, 0, 0], 'empty visible rows returns zeroes');
 };
 

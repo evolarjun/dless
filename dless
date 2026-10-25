@@ -15,6 +15,7 @@ use Getopt::Long qw(GetOptionsFromArray :config no_auto_abbrev no_ignore_case);
 use Term::ReadKey;
 use List::Util qw(min max);
 use POSIX qw(ttyname);
+use File::Temp qw(tempfile);
 
 # ------ Constants ------------------------------
 use constant MAX_ANALYSIS_ROWS => 10_000;
@@ -280,6 +281,121 @@ sub parse_csv_line {
     return \@fields;
 }
 
+# Return the number of 64-bit integers stored in a packed binary string.
+sub packed_count {
+    my ($packed) = @_;
+    return 0 unless defined $packed;
+    return int(length($packed) / 8);
+}
+
+# Unpack and return the 64-bit unsigned integer at 0-based index $idx.
+# Returns undef if out of bounds.
+sub packed_get {
+    my ($packed, $idx) = @_;
+    return undef unless defined $packed && defined $idx && $idx >= 0;
+    my $byte_pos = $idx * 8;
+    return undef if $byte_pos + 8 > length($packed);
+    return unpack('Q', substr($packed, $byte_pos, 8));
+}
+
+# Return the number of currently visible rows.
+# If $filtered_indices_packed is undef, all $total_data_rows are visible.
+sub visible_row_count {
+    my ($total_data_rows, $filtered_indices_packed) = @_;
+    return packed_count($filtered_indices_packed) if defined $filtered_indices_packed;
+    return $total_data_rows // 0;
+}
+
+# Map a 0-based visible row index to a 0-based data row index.
+sub visible_to_data_row {
+    my ($vis_idx, $filtered_indices_packed) = @_;
+    return undef unless defined $vis_idx && $vis_idx >= 0;
+    return packed_get($filtered_indices_packed, $vis_idx) if defined $filtered_indices_packed;
+    return $vis_idx;
+}
+
+# Parse a raw line into an arrayref of field strings.
+sub parse_row_line {
+    my ($line, $get_next_line, $opt_csv, $opt_delim) = @_;
+    return [] unless defined $line;
+    if ($opt_csv) {
+        return parse_csv_line($line, $get_next_line);
+    }
+    $opt_delim //= "\t";
+    $line =~ s/\r?\n$//;
+    return [split /\Q$opt_delim\E/, $line, -1];
+}
+
+# Index an input stream or filehandle into a packed 64-bit offsets string.
+# Returns ($header, $offsets_packed, $n_rows, $n_cols, \@sample_rows)
+sub index_stream {
+    my ($in, $sink_fh, $opt_csv, $opt_delim, $max_analysis_rows) = @_;
+    $opt_delim          //= "\t";
+    $max_analysis_rows  //= MAX_ANALYSIS_ROWS;
+
+    my $curr_offset    = 0;
+    my $read_line = sub {
+        my $l;
+        if (ref($in) eq 'CODE') {
+            $l = $in->();
+        } else {
+            $l = <$in>;
+        }
+        return undef unless defined $l;
+        if (defined $sink_fh) {
+            print $sink_fh $l;
+        }
+        $curr_offset += length($l);
+        return $l;
+    };
+
+    my $first_line = $read_line->();
+    return (undef, undef, 0, 0, []) unless defined $first_line;
+
+    my $header = parse_row_line($first_line, $read_line, $opt_csv, $opt_delim);
+    my $n_cols = scalar(@$header);
+    my $offsets_packed = '';
+    my $n_rows = 0;
+    my @sample_rows;
+
+    while (1) {
+        my $row_start_offset = $curr_offset;
+        my $line = $read_line->();
+        last unless defined $line;
+
+        $offsets_packed .= pack('Q', $row_start_offset);
+        $n_rows++;
+
+        if ($n_rows <= $max_analysis_rows) {
+            my $fields = parse_row_line($line, $read_line, $opt_csv, $opt_delim);
+            $n_cols = scalar(@$fields) if scalar(@$fields) > $n_cols;
+            push @sample_rows, $fields;
+        } else {
+            if ($opt_csv && index($line, '"') != -1) {
+                parse_csv_line($line, $read_line);
+            }
+        }
+    }
+
+    push @$header, '' while @$header < $n_cols;
+    if (defined $sink_fh) {
+        $sink_fh->flush if $sink_fh->can('flush');
+    }
+
+    return ($header, $offsets_packed, $n_rows, $n_cols, \@sample_rows);
+}
+
+# Seek to data row $row_idx in $fh and return the parsed arrayref of fields.
+sub read_indexed_row {
+    my ($fh, $offsets_packed, $row_idx, $opt_csv, $opt_delim) = @_;
+    my $offset = packed_get($offsets_packed, $row_idx);
+    return undef unless defined $offset;
+    seek($fh, $offset, 0) or return undef;
+    my $line = <$fh>;
+    return undef unless defined $line;
+    return parse_row_line($line, sub { scalar <$fh> }, $opt_csv, $opt_delim);
+}
+
 # Clamp $val to [$lo, $hi].
 sub clamp {
     my ($val, $lo, $hi) = @_;
@@ -353,113 +469,193 @@ sub format_option_prompt {
     return $REVERSE_YELLOW . $msg . $RESET;
 }
 
-# Search data rows cell-by-cell for regex match.
-# $rows_ref : arrayref of data row arrayrefs
-# $n_cols   : number of columns
-# $regex    : compiled regex object (qr//)
-# Returns arrayref of [row_idx, col_idx] tuples.
-# Search data rows cell-by-cell or full-line for regex match.
-# $rows_ref : arrayref of data row arrayrefs
-# $n_cols   : number of columns
-# $regex    : compiled regex object (qr//)
-# $opt_delim: field delimiter string (default: "\t")
-# Returns arrayref of [row_idx, col_idx] tuples (deduplicated per row).
-sub find_matches {
-    my ($rows_ref, $n_cols, $regex, $opt_delim) = @_;
+# Given a single parsed row, returns an arrayref of matching column indices in ascending order.
+sub find_row_matching_cols {
+    my ($row, $n_cols, $regex, $opt_delim) = @_;
     $opt_delim //= "\t";
-    my @matches;
-    return \@matches unless defined $regex && @$rows_ref;
+    return [] unless defined $regex && defined $row && @$row;
 
-    for my $ri (0 .. $#$rows_ref) {
-        my $row  = $rows_ref->[$ri];
-        my $line = join($opt_delim, @$row);
+    my $line = join($opt_delim, @$row);
+    return [] unless $line =~ $regex;
 
-        # Precompute character ranges for each column in $line
-        my @col_ranges;
-        my $pos_idx = 0;
-        my $d_len   = length($opt_delim);
+    my @col_ranges;
+    my $pos_idx = 0;
+    my $d_len   = length($opt_delim);
+    for my $ci (0 .. $n_cols - 1) {
+        my $val_len = ($ci < @$row && defined $row->[$ci]) ? length($row->[$ci]) : 0;
+        my $start   = $pos_idx;
+        my $end     = $start + max(0, $val_len - 1);
+        push @col_ranges, [$start, $end];
+        $pos_idx += $val_len + $d_len;
+    }
+
+    my @cols;
+    my %seen_col;
+    while ($line =~ /$regex/g) {
+        my $m_start = $-[0];
+        if ($+[0] == $-[0]) {
+            pos($line) = $-[0] + 1;
+        }
+        my $matched_col = $n_cols - 1;
         for my $ci (0 .. $n_cols - 1) {
-            my $val_len = ($ci < @$row && defined $row->[$ci]) ? length($row->[$ci]) : 0;
-            my $start   = $pos_idx;
-            my $end     = $start + max(0, $val_len - 1);
-            push @col_ranges, [$start, $end];
-            $pos_idx += $val_len + $d_len;
+            if ($ci == $n_cols - 1 || $m_start < $col_ranges[$ci + 1]->[0]) {
+                $matched_col = $ci;
+                last;
+            }
         }
-
-        my %seen_col;
-        while ($line =~ /$regex/g) {
-            my $m_start = $-[0];
-
-            # Guard against zero-width matches causing infinite loop
-            if ($+[0] == $-[0]) {
-                pos($line) = $-[0] + 1;
-            }
-
-            # Map m_start to column index (column where match start falls)
-            my $matched_col = $n_cols - 1;
-            for my $ci (0 .. $n_cols - 1) {
-                if ($ci == $n_cols - 1 || $m_start < $col_ranges[$ci + 1]->[0]) {
-                    $matched_col = $ci;
-                    last;
-                }
-            }
-
-            if (!$seen_col{$matched_col}++) {
-                push @matches, [$ri, $matched_col];
-            }
+        if (!$seen_col{$matched_col}++) {
+            push @cols, $matched_col;
         }
     }
-    return \@matches;
+    return \@cols;
 }
 
-# Filter row indices by matching joined full-line string against a regex pattern.
-# $rows_ref : arrayref of data row arrayrefs
-# $regex    : compiled regex object (qr//) or undef
-# $opt_delim: field delimiter string (default: "\t")
-# Returns arrayref of matching row indices.
-sub filter_rows {
-    my ($rows_ref, $regex, $opt_delim) = @_;
-    return [(0 .. $#$rows_ref)] unless defined $regex && @$rows_ref;
-    $opt_delim //= "\t";
-    my @indices;
-    for my $i (0 .. $#$rows_ref) {
-        my $row  = $rows_ref->[$i];
-        my $line = join($opt_delim, @$row);
-        if ($line =~ $regex) {
-            push @indices, $i;
-        }
-    }
-    return \@indices;
-}
-
-# Find index in $matches_ref relative to ($curr_row, $curr_col).
-# $direction: +1 for forward/next, -1 for backward/prev
-# Returns ($match_array_index, $wrapped_flag)
-sub find_next_match_index {
-    my ($matches_ref, $curr_row, $curr_col, $direction) = @_;
-    return (undef, 0) unless defined $matches_ref && @$matches_ref;
+# Search visible rows incrementally for the next/previous regex match.
+# Returns ($data_row_idx, $col_idx, $vis_row_idx, $wrapped_flag) or (undef, undef, undef, 0)
+sub find_next_match {
+    my ($fh, $offsets_packed, $n_rows, $filtered_indices_packed, $n_cols, $regex, $opt_csv, $opt_delim, $curr_vis_row, $curr_col, $direction) = @_;
+    my $total_vis = visible_row_count($n_rows, $filtered_indices_packed);
+    return (undef, undef, undef, 0) unless defined $regex && $total_vis > 0;
+    $opt_delim //= ($opt_csv ? ',' : "\t");
     $direction //= 1;
+    $curr_vis_row //= 0;
+    $curr_col //= -1;
+
+    my $check_row = sub {
+        my ($vi) = @_;
+        my $ri = visible_to_data_row($vi, $filtered_indices_packed);
+        return (undef, []) unless defined $ri;
+        my $offset = packed_get($offsets_packed, $ri);
+        return (undef, []) unless defined $offset;
+        seek($fh, $offset, 0) or return (undef, []);
+        my $line = <$fh>;
+        return (undef, []) unless defined $line;
+
+        my $fields;
+        if ($opt_csv) {
+            $fields = parse_csv_line($line, sub { scalar <$fh> });
+        } else {
+            $line =~ s/\r?\n$//;
+            return ($ri, []) unless $line =~ $regex;
+            $fields = [split /\Q$opt_delim\E/, $line, -1];
+        }
+        my $cols = find_row_matching_cols($fields, $n_cols, $regex, $opt_delim);
+        return ($ri, $cols);
+    };
 
     if ($direction > 0) {
-        for my $i (0 .. $#$matches_ref) {
-            my ($r, $c) = @{$matches_ref->[$i]};
-            if ($r > $curr_row || ($r == $curr_row && $c > $curr_col)) {
-                return ($i, 0);
+        # Check current row for column > $curr_col
+        if ($curr_vis_row >= 0 && $curr_vis_row < $total_vis) {
+            my ($ri, $cols) = $check_row->($curr_vis_row);
+            for my $c (@$cols) {
+                if ($c > $curr_col) {
+                    return ($ri, $c, $curr_vis_row, 0);
+                }
             }
         }
-        # Wrap to start
-        return (0, 1);
+
+        # Scan forward from curr_vis_row + 1 to end
+        for my $vi ($curr_vis_row + 1 .. $total_vis - 1) {
+            my ($ri, $cols) = $check_row->($vi);
+            if (@$cols) {
+                return ($ri, $cols->[0], $vi, 0);
+            }
+        }
+
+        # Wrap to start: 0 .. min($curr_vis_row, $total_vis - 1)
+        my $wrap_limit = min($curr_vis_row, $total_vis - 1);
+        for my $vi (0 .. $wrap_limit) {
+            my ($ri, $cols) = $check_row->($vi);
+            if ($vi == $curr_vis_row) {
+                for my $c (@$cols) {
+                    if ($c <= $curr_col) {
+                        return ($ri, $c, $vi, 1);
+                    }
+                }
+            } else {
+                if (@$cols) {
+                    return ($ri, $cols->[0], $vi, 1);
+                }
+            }
+        }
     } else {
-        for (my $i = $#$matches_ref; $i >= 0; $i--) {
-            my ($r, $c) = @{$matches_ref->[$i]};
-            if ($r < $curr_row || ($r == $curr_row && $c < $curr_col)) {
-                return ($i, 0);
+        # Backward search
+        # Check current row for column < $curr_col
+        if ($curr_vis_row >= 0 && $curr_vis_row < $total_vis) {
+            my ($ri, $cols) = $check_row->($curr_vis_row);
+            for (my $idx = $#$cols; $idx >= 0; $idx--) {
+                my $c = $cols->[$idx];
+                if ($c < $curr_col) {
+                    return ($ri, $c, $curr_vis_row, 0);
+                }
             }
         }
-        # Wrap to end
-        return ($#$matches_ref, 1);
+
+        # Scan backward from curr_vis_row - 1 down to 0
+        for (my $vi = $curr_vis_row - 1; $vi >= 0; $vi--) {
+            my ($ri, $cols) = $check_row->($vi);
+            if (@$cols) {
+                return ($ri, $cols->[-1], $vi, 0);
+            }
+        }
+
+        # Wrap to end: $total_vis - 1 down to max(0, $curr_vis_row)
+        my $wrap_start = $total_vis - 1;
+        my $wrap_limit = max(0, $curr_vis_row);
+        for (my $vi = $wrap_start; $vi >= $wrap_limit; $vi--) {
+            my ($ri, $cols) = $check_row->($vi);
+            if ($vi == $curr_vis_row) {
+                for (my $idx = $#$cols; $idx >= 0; $idx--) {
+                    my $c = $cols->[$idx];
+                    if ($c >= $curr_col) {
+                        return ($ri, $c, $vi, 1);
+                    }
+                }
+            } else {
+                if (@$cols) {
+                    return ($ri, $cols->[-1], $vi, 1);
+                }
+            }
+        }
     }
+
+    return (undef, undef, undef, 0);
 }
+
+# Filter data rows by regex match against the seekable filehandle.
+# Returns packed 64-bit string of matching 0-based data row indices, or undef if $regex is undef.
+sub filter_indexed_rows {
+    my ($fh, $offsets_packed, $n_rows, $regex, $opt_csv, $opt_delim) = @_;
+    return undef unless defined $regex;
+    return '' unless defined $n_rows && $n_rows > 0 && defined $offsets_packed && length($offsets_packed) >= 8;
+
+    $opt_delim //= ($opt_csv ? ',' : "\t");
+    my $first_offset = packed_get($offsets_packed, 0);
+    return '' unless defined $first_offset;
+    seek($fh, $first_offset, 0) or return '';
+
+    my $packed = '';
+    for my $ri (0 .. $n_rows - 1) {
+        my $line = <$fh>;
+        last unless defined $line;
+
+        if ($opt_csv) {
+            my $fields = parse_csv_line($line, sub { scalar <$fh> });
+            my $joined = join($opt_delim, @$fields);
+            if ($joined =~ $regex) {
+                $packed .= pack('Q', $ri);
+            }
+        } else {
+            $line =~ s/\r?\n$//;
+            if ($line =~ $regex) {
+                $packed .= pack('Q', $ri);
+            }
+        }
+    }
+
+    return $packed;
+}
+
 
 # Build and clip a data row display line, applying cell match highlights.
 # $fields_ref     : arrayref of field values
@@ -669,15 +865,14 @@ sub get_visible_column_indices {
 }
 
 # Compute maximum field length for each column across the specified visible rows.
-# $data_ref               : arrayref of data row arrayrefs
-# $visible_row_indices_ref: arrayref of row indices in $data_ref
-# $n_cols                 : number of columns
+# $rows_ref : arrayref of visible row arrayrefs
+# $n_cols   : number of columns
 # Returns arrayref of max field lengths for each column.
 sub get_visible_field_max_widths {
-    my ($data_ref, $visible_row_indices_ref, $n_cols) = @_;
+    my ($rows_ref, $n_cols) = @_;
     my @max_widths = (0) x $n_cols;
-    for my $ri (@$visible_row_indices_ref) {
-        my $row = $data_ref->[$ri];
+    for my $row (@$rows_ref) {
+        next unless defined $row;
         for my $ci (0 .. $n_cols - 1) {
             my $val = ($ci < @$row && defined $row->[$ci]) ? $row->[$ci] : '';
             my $len = length($val);
@@ -1125,7 +1320,7 @@ sub _main {
     @ARGV             = @{ $opts->{files} };
 
     # ------ Load data ------------------------------
-    my ($filename, @all_rows);
+    my ($filename, $data_fh, $header, $offsets_packed, $n_rows, $n_cols, $sample_rows_ref);
 
     if (!-t STDIN) {
         # Data arrives on STDIN (pipe); reopen STDIN from /dev/tty for keyboard.
@@ -1135,7 +1330,7 @@ sub _main {
         my $n = sysread(STDIN, $magic, 4);
         my $fmt = ($n && $n >= 2) ? detect_compression($magic, undef) : undef;
 
-        my ($data_fh, $child_pid, $feeder_pid);
+        my ($child_pid, $feeder_pid, $stream_fh);
         my @pending_first;
 
         if ($fmt) {
@@ -1181,9 +1376,9 @@ sub _main {
             }
             close $feed_w;
             close $out_w;
-            $data_fh = $out_r;
+            $stream_fh = $out_r;
         } else {
-            $data_fh = \*STDIN;
+            $stream_fh = \*STDIN;
             if (length($magic)) {
                 my $rest_of_first = <STDIN>;
                 my $full_first = $magic . ($rest_of_first // '');
@@ -1193,25 +1388,22 @@ sub _main {
 
         my $get_next = sub {
             return shift @pending_first if @pending_first;
-            return scalar <$data_fh>;
+            return scalar <$stream_fh>;
         };
 
-        if ($opt_csv) {
-            while (my $line = $get_next->()) {
-                push @all_rows, parse_csv_line($line, $get_next);
-            }
-        } else {
-            while (my $line = $get_next->()) {
-                chomp $line;
-                push @all_rows, [split /\Q$opt_delim\E/, $line, -1];
-            }
-        }
+        my $tmp_fh = tempfile(UNLINK => 1);
+        binmode($tmp_fh);
+        ($header, $offsets_packed, $n_rows, $n_cols, $sample_rows_ref) =
+            index_stream($get_next, $tmp_fh, $opt_csv, $opt_delim, MAX_ANALYSIS_ROWS);
 
         if ($fmt) {
-            close $data_fh;
+            close $stream_fh;
             waitpid($child_pid, 0) if defined $child_pid;
             waitpid($feeder_pid, 0) if defined $feeder_pid;
         }
+
+        seek($tmp_fh, 0, 0);
+        $data_fh = $tmp_fh;
 
         # Reopen STDIN for keyboard input.
         # Try /dev/tty first; if that fails (e.g. Device not configured in subshell pipelines),
@@ -1232,7 +1424,6 @@ sub _main {
         close $probe_fh;
 
         my $fmt = detect_compression($magic, $filename);
-        my $fh;
         if ($fmt) {
             my $prog = ($fmt eq 'gzip') ? 'gzip' : 'zstd';
             if (!command_in_path($prog)) {
@@ -1240,47 +1431,38 @@ sub _main {
                 exit 1;
             }
             my @cmd = get_decompressor_command($fmt, $filename);
-            open($fh, '-|', @cmd) or die "dless: Cannot run @cmd: $!\n";
-        } else {
-            open($fh, '<', $filename) or die "dless: Cannot open '$filename': $!\n";
-        }
+            open(my $pipe_fh, '-|', @cmd) or die "dless: Cannot run @cmd: $!\n";
+            binmode($pipe_fh);
 
-        if ($opt_csv) {
-            while (my $line = <$fh>) {
-                push @all_rows, parse_csv_line($line, sub { scalar <$fh> });
-            }
+            my $tmp_fh = tempfile(UNLINK => 1);
+            binmode($tmp_fh);
+            ($header, $offsets_packed, $n_rows, $n_cols, $sample_rows_ref) =
+                index_stream($pipe_fh, $tmp_fh, $opt_csv, $opt_delim, MAX_ANALYSIS_ROWS);
+            close $pipe_fh;
+
+            seek($tmp_fh, 0, 0);
+            $data_fh = $tmp_fh;
         } else {
-            while (my $line = <$fh>) {
-                chomp $line;
-                push @all_rows, [split /\Q$opt_delim\E/, $line, -1];
-            }
+            open(my $disk_fh, '<', $filename) or die "dless: Cannot open '$filename': $!\n";
+            binmode($disk_fh);
+            ($header, $offsets_packed, $n_rows, $n_cols, $sample_rows_ref) =
+                index_stream($disk_fh, undef, $opt_csv, $opt_delim, MAX_ANALYSIS_ROWS);
+            $data_fh = $disk_fh;
         }
-        close $fh;
     } else {
         usage();
     }
 
-    if (@all_rows == 0) {
+    if (!defined $header) {
         die "dless: empty input\n";
     }
 
-    # ------ Separate header + data ------------------------------
-    my $header = $all_rows[0];
-    my @data   = @all_rows[1 .. $#all_rows];
-    my $n_rows = scalar @data;
-
-    # Determine column count (max across header + all rows)
-    my $n_cols = scalar @$header;
-    for my $row (@data) {
-        $n_cols = scalar(@$row) if scalar(@$row) > $n_cols;
-    }
-    push @$header, '' while @$header < $n_cols;  # pad header
-
     # ------ Column analysis ------------------------------
-    my $col_widths_ref      = compute_col_widths(\@data, $header, $n_cols, MAX_ANALYSIS_ROWS);
+    my $col_widths_ref      = compute_col_widths($sample_rows_ref, $header, $n_cols, MAX_ANALYSIS_ROWS);
     my $orig_col_widths_ref = [@$col_widths_ref];
     my $is_hidden_ref       = [(0) x $n_cols];
-    my $is_numeric_ref      = detect_numeric(\@data, $n_cols, MAX_ANALYSIS_ROWS);
+    my $is_numeric_ref      = detect_numeric($sample_rows_ref, $n_cols, MAX_ANALYSIS_ROWS);
+    $sample_rows_ref        = undef;  # free sample rows immediately
 
     # ------ Terminal size ------------------------------
     my ($term_rows, $term_cols) = _get_term_size();
@@ -1293,6 +1475,7 @@ sub _main {
     my $cleanup = sub {
         return if $cleaned_up++;
         save_history_file($history_file, $search_history_ref, $filter_history_ref, 100) if defined $history_file;
+        close $data_fh if defined $data_fh;
         ReadMode('restore');
         print "\e[?25h\e[?1049l";  # show cursor, restore screen
     };
@@ -1326,16 +1509,16 @@ sub _main {
         draft    => '',
     };
 
-    my $filter_regex        = undef;
-    my $visible_indices_ref = filter_rows(\@data, undef, $opt_delim);
+    my $filter_regex            = undef;
+    my $filtered_indices_packed = undef;  # undef = all $n_rows visible
 
-    my $search_regex     = undef;
-    my @search_matches   = ();
-    my $search_match_idx = undef;
-    my $status_msg       = undef;
+    my $search_regex   = undef;
+    my $active_match   = undef;  # [$data_row_idx, $col_idx] or undef
+    my $active_vis_idx = undef;  # 0-based visible row index of active match
+    my $status_msg     = undef;
 
     # Rows available for data (total rows minus non-data rows: header, status bar, and optional colnum row)
-    my $n_filtered_rows   = sub { scalar @$visible_indices_ref };
+    my $n_filtered_rows   = sub { visible_row_count($n_rows, $filtered_indices_packed) };
     my $visible_data_rows = sub { $term_rows - ($show_col_nums ? 3 : 2) };
     my $max_v             = sub { max_vertical_offset($n_filtered_rows->()) };
     my $bottom_v          = sub { bottom_vertical_offset($n_filtered_rows->(), $visible_data_rows->()) };
@@ -1348,43 +1531,45 @@ sub _main {
         my ($pattern) = @_;
         $status_msg = undef;
         if (!defined $pattern || $pattern eq '') {
-            $search_regex     = undef;
-            @search_matches   = ();
-            $search_match_idx = undef;
+            $search_regex   = undef;
+            $active_match   = undef;
+            $active_vis_idx = undef;
             return;
         }
 
         my ($compiled, $err) = compile_regex($pattern);
         if ($err || !$compiled) {
-            $status_msg       = $err // "Invalid regex: $pattern";
-            $search_regex     = undef;
-            @search_matches   = ();
-            $search_match_idx = undef;
+            $status_msg     = $err // "Invalid regex: $pattern";
+            $search_regex   = undef;
+            $active_match   = undef;
+            $active_vis_idx = undef;
             return;
         }
 
-        $search_regex   = $compiled;
-        @search_matches = @{ find_matches(\@data, $n_cols, $search_regex, $opt_delim) };
+        $search_regex = $compiled;
+        my ($r, $c, $vis_idx, $wrapped) = find_next_match(
+            $data_fh, $offsets_packed, $n_rows, $filtered_indices_packed,
+            $n_cols, $search_regex, $opt_csv, $opt_delim,
+            $v_offset, -1, 1
+        );
 
-        if (!@search_matches) {
-            $status_msg       = "Pattern not found: $pattern";
-            $search_match_idx = undef;
+        if (!defined $r) {
+            $status_msg     = "Pattern not found: $pattern";
+            $active_match   = undef;
+            $active_vis_idx = undef;
             return;
         }
 
-        my ($idx, $wrapped) = find_next_match_index(\@search_matches, $v_offset - 1, 999999, 1);
-        $search_match_idx = $idx // 0;
-        my ($r, $c)       = @{ $search_matches[$search_match_idx] };
+        $active_match   = [$r, $c];
+        $active_vis_idx = $vis_idx;
 
         if ($wrapped) {
             $status_msg = "Search wrapped to top";
         }
 
         my $vdr = $visible_data_rows->();
-        my ($target_vis_idx) = grep { $visible_indices_ref->[$_] == $r } (0 .. $#$visible_indices_ref);
-        $target_vis_idx //= $r;
-        if ($target_vis_idx < $v_offset || $target_vis_idx >= $v_offset + $vdr) {
-            $v_offset = clamp($target_vis_idx, 0, $max_v->());
+        if ($vis_idx < $v_offset || $vis_idx >= $v_offset + $vdr) {
+            $v_offset = clamp($vis_idx, 0, $max_v->());
         }
 
         my $col_start = 0;
@@ -1402,28 +1587,39 @@ sub _main {
 
     my $navigate_match = sub {
         my ($dir) = @_;
-        return unless defined $search_regex && @search_matches;
+        return unless defined $search_regex;
         $status_msg = undef;
 
-        my ($curr_r, $curr_c) = (defined $search_match_idx && $search_match_idx < @search_matches)
-            ? @{ $search_matches[$search_match_idx] }
-            : ($v_offset, -1);
+        my ($start_vis, $start_col);
+        if (defined $active_match && defined $active_vis_idx) {
+            ($start_vis, $start_col) = ($active_vis_idx, $active_match->[1]);
+        } else {
+            ($start_vis, $start_col) = ($v_offset, $dir > 0 ? -1 : $n_cols);
+        }
 
-        my ($idx, $wrapped) = find_next_match_index(\@search_matches, $curr_r, $curr_c, $dir);
-        return unless defined $idx;
+        my ($r, $c, $vis_idx, $wrapped) = find_next_match(
+            $data_fh, $offsets_packed, $n_rows, $filtered_indices_packed,
+            $n_cols, $search_regex, $opt_csv, $opt_delim,
+            $start_vis, $start_col, $dir
+        );
 
-        $search_match_idx = $idx;
-        my ($r, $c)       = @{ $search_matches[$search_match_idx] };
+        if (!defined $r) {
+            $status_msg     = "Pattern not found";
+            $active_match   = undef;
+            $active_vis_idx = undef;
+            return;
+        }
+
+        $active_match   = [$r, $c];
+        $active_vis_idx = $vis_idx;
 
         if ($wrapped) {
             $status_msg = ($dir > 0) ? "Search wrapped to top" : "Search wrapped to bottom";
         }
 
         my $vdr = $visible_data_rows->();
-        my ($target_vis_idx_nav) = grep { $visible_indices_ref->[$_] == $r } (0 .. $#$visible_indices_ref);
-        $target_vis_idx_nav //= $r;
-        if ($target_vis_idx_nav < $v_offset || $target_vis_idx_nav >= $v_offset + $vdr) {
-            $v_offset = clamp($target_vis_idx_nav, 0, $max_v->());
+        if ($vis_idx < $v_offset || $vis_idx >= $v_offset + $vdr) {
+            $v_offset = clamp($vis_idx, 0, $max_v->());
         }
 
         my $col_start = 0;
@@ -1460,19 +1656,16 @@ sub _main {
         $output .= $BOLD . $header_ln . $header_clipped . $RESET . $CLEAR_EOL . "\n";
 
         # Data rows
-        my $active_match_tuple = (defined $search_match_idx && @search_matches)
-            ? $search_matches[$search_match_idx]
-            : undef;
-
+        my $total_vis = $n_filtered_rows->();
         for my $i ($v_offset .. $v_offset + $vdr - 1) {
-            if ($i < @$visible_indices_ref) {
-                my $ri         = $visible_indices_ref->[$i];
-                my $row        = $data[$ri];
+            if ($i < $total_vis) {
+                my $ri         = visible_to_data_row($i, $filtered_indices_packed);
+                my $row        = read_indexed_row($data_fh, $offsets_packed, $ri, $opt_csv, $opt_delim) // [];
                 my @fields     = map { $row->[$_] // '' } (0 .. $n_cols - 1);
                 my $row_prefix = $show_line_nums ? format_line_num($ri, $n_rows) : '';
                 my $clipped    = render_clipped_row(
                     \@fields, $col_widths_ref, $is_numeric_ref,
-                    $h_offset, $content_w, $ri, $search_regex, $active_match_tuple,
+                    $h_offset, $content_w, $ri, $search_regex, $active_match,
                     $opt_delim, $is_hidden_ref
                 );
                 $output .= $BOLD . $row_prefix . $RESET . $clipped . $CLEAR_EOL . "\n";
@@ -1511,7 +1704,7 @@ sub _main {
             my $padded   = $dash_msg . ' ' x max(0, $term_cols - length($dash_msg));
             $output .= "\e[7;33m" . $padded . "\e[0m\e[?25l";
         } else {
-            my $total_vis = scalar @$visible_indices_ref;
+            my $total_vis = $n_filtered_rows->();
             my $first_r   = $total_vis > 0 ? $v_offset + 1                      : 0;
             my $last_r    = $total_vis > 0 ? min($v_offset + $vdr, $total_vis)  : 0;
             my $status    = sprintf(
@@ -1629,16 +1822,20 @@ sub _main {
                 } elsif ($mode eq '&') {
                     $status_msg = undef;
                     if (!length $query) {
-                        $filter_regex        = undef;
-                        $visible_indices_ref = filter_rows(\@data, undef, $opt_delim);
+                        $filter_regex            = undef;
+                        $filtered_indices_packed = undef;
+                        $active_match            = undef;
+                        $active_vis_idx          = undef;
                     } else {
                         my ($compiled, $err) = compile_regex($query);
                         if ($err || !$compiled) {
                             $status_msg = $err // "Invalid regex: $query";
                         } else {
-                            $filter_regex        = $compiled;
-                            $visible_indices_ref = filter_rows(\@data, $filter_regex, $opt_delim);
-                            if (!@$visible_indices_ref) {
+                            $filter_regex            = $compiled;
+                            $filtered_indices_packed = filter_indexed_rows($data_fh, $offsets_packed, $n_rows, $filter_regex, $opt_csv, $opt_delim);
+                            $active_match            = undef;
+                            $active_vis_idx          = undef;
+                            if (visible_row_count($n_rows, $filtered_indices_packed) == 0) {
                                 $status_msg = "No rows match filter: $query";
                             }
                         }
@@ -1655,12 +1852,13 @@ sub _main {
                     my $vis_cols_ref = get_visible_column_indices($col_widths_ref, $is_hidden_ref, $h_offset, $content_w);
 
                     my $vdr           = $visible_data_rows->();
-                    my $total_vis_idx = scalar @$visible_indices_ref;
-                    my @vis_row_indices;
+                    my $total_vis_idx = $n_filtered_rows->();
+                    my @vis_rows;
                     for my $i ($v_offset .. min($v_offset + $vdr - 1, $total_vis_idx - 1)) {
-                        push @vis_row_indices, $visible_indices_ref->[$i];
+                        my $ri = visible_to_data_row($i, $filtered_indices_packed);
+                        push @vis_rows, read_indexed_row($data_fh, $offsets_packed, $ri, $opt_csv, $opt_delim);
                     }
-                    my $vis_max_w_ref = get_visible_field_max_widths(\@data, \@vis_row_indices, $n_cols);
+                    my $vis_max_w_ref = get_visible_field_max_widths(\@vis_rows, $n_cols);
 
                     my ($ok, $msg) = adjust_column_widths(
                         $orig_col_widths_ref,

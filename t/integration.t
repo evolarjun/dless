@@ -491,6 +491,15 @@ subtest 'search and filter interactive workflows' => sub {
     like($mf_filter, qr/Alice/, 'Alice is visible when multi-field filtered');
     unlike($mf_filter, qr/Bob/, 'Bob is hidden when multi-field filtered');
 
+    # Search within filtered rows only
+    send_keys('/', 'B', 'o', 'b', 'Enter');
+    my $filtered_search_nomatch = capture();
+    like($filtered_search_nomatch, qr/Pattern not found/i, 'searching for Bob fails when filter hides Bob');
+
+    send_keys('/', 'A', 'l', 'i', 'c', 'e', 'Enter');
+    my $filtered_search_match = capture();
+    like($filtered_search_match, qr/Alice/, 'searching for Alice succeeds within active filter');
+
     # Clear filter
     send_keys('&', 'Enter');
 
