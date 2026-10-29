@@ -1296,6 +1296,7 @@ subtest 'parse_cli_args pure function' => sub {
     is($opts0->{line_numbers}, 0, 'default line numbers is 0');
     is($opts0->{help}, 0, 'default help is 0');
     is($opts0->{version}, 0, 'default version is 0');
+    is($opts0->{mouse}, 1, 'default mouse is 1');
     is_deeply($opts0->{files}, [], 'default files list is empty');
 
     # Delimiter flag -d and --delimiter
@@ -1344,6 +1345,16 @@ subtest 'parse_cli_args pure function' => sub {
     my ($opts_ver, $err_ver) = parse_cli_args('--version');
     is($err_ver, undef, '--version parsed without error');
     is($opts_ver->{version}, 1, '--version sets version to 1');
+
+    # Mouse flag --no-mouse
+    my ($opts_nm, $err_nm) = parse_cli_args('--no-mouse');
+    is($err_nm, undef, '--no-mouse parsed without error');
+    is($opts_nm->{mouse}, 0, '--no-mouse sets mouse to 0');
+
+    # --mouse rejected as unknown option
+    my ($opts_m, $err_m) = parse_cli_args('--mouse');
+    is($opts_m, undef, '--mouse rejected');
+    like($err_m, qr/Unknown option:\s*mouse/i, '--mouse returns unknown option');
 
     # File arguments preserved
     my ($opts9, $err9) = parse_cli_args('-d', ':', 'foo.tsv', 'bar.tsv');
@@ -1505,14 +1516,51 @@ subtest 'Bug 6: header remains visible for columns that are partially scrolled i
 };
 
 # ---------------------------------------------------------------------------
+# parse_mouse_event()
+# ---------------------------------------------------------------------------
+subtest 'parse_mouse_event' => sub {
+    # Wheel vertical
+    is(parse_mouse_event("\e[<64;10;20M"), 'scroll_up',    'wheel up');
+    is(parse_mouse_event("\e[<65;10;20M"), 'scroll_down',  'wheel down');
+
+    # Wheel horizontal
+    is(parse_mouse_event("\e[<66;10;20M"), 'scroll_left',  'wheel left');
+    is(parse_mouse_event("\e[<67;10;20M"), 'scroll_right', 'wheel right');
+
+    # Shift-wheel vertical mapped to horizontal
+    is(parse_mouse_event("\e[<68;10;20M"), 'shift_scroll_left',  'shift-wheel up -> shift_scroll_left');
+    is(parse_mouse_event("\e[<69;10;20M"), 'shift_scroll_right', 'shift-wheel down -> shift_scroll_right');
+
+    # Shift-wheel horizontal
+    is(parse_mouse_event("\e[<70;10;20M"), 'shift_scroll_left',  'shift-wheel left -> shift_scroll_left');
+    is(parse_mouse_event("\e[<71;10;20M"), 'shift_scroll_right', 'shift-wheel right -> shift_scroll_right');
+
+    # Button clicks and releases should be ignored (return undef)
+    is(parse_mouse_event("\e[<0;10;20M"), undef, 'left button press ignored');
+    is(parse_mouse_event("\e[<0;10;20m"), undef, 'left button release ignored');
+    is(parse_mouse_event("\e[<1;10;20M"), undef, 'middle button press ignored');
+    is(parse_mouse_event("\e[<2;10;20M"), undef, 'right button press ignored');
+    is(parse_mouse_event("\e[<35;10;20M"), undef, 'motion event ignored');
+
+    # Non-mouse or malformed sequences
+    is(parse_mouse_event("\e[A"), undef, 'arrow key is not mouse event');
+    is(parse_mouse_event(''), undef, 'empty string is not mouse event');
+    is(parse_mouse_event(undef), undef, 'undef is not mouse event');
+};
+
+# ---------------------------------------------------------------------------
 # Version option and message formatting
 # ---------------------------------------------------------------------------
 subtest 'version and usage reporting' => sub {
     our $VERSION;
-    is($VERSION, '0.1', '$VERSION is 0.1');
-    is(format_version_message(), "dless 0.1\n", 'format_version_message returns expected string');
+    is($VERSION, '0.2', '$VERSION is 0.2');
+    is(format_version_message(), "dless 0.2\n", 'format_version_message returns expected string');
     like(format_usage_message(), qr/-v,\s*--version/, 'format_usage_message documents -v, --version');
     like(format_detailed_help(), qr/-v,\s*--version/, 'format_detailed_help documents -v, --version');
+    like(format_usage_message(), qr/--no-mouse/, 'format_usage_message documents --no-mouse');
+    like(format_detailed_help(), qr/--no-mouse/, 'format_detailed_help documents --no-mouse');
+    like(format_detailed_help(), qr/Mouse wheel/i, 'format_detailed_help documents Mouse wheel');
+    like(format_detailed_help(), qr/Shift-mouse wheel\s+Scroll left\/right 1 character/, 'format_detailed_help documents 1 character scroll');
 };
 
 done_testing();

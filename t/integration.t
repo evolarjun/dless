@@ -66,6 +66,14 @@ sub send_keys {
     select(undef, undef, undef, 0.02);
 }
 
+# Send literal escape sequence to the running pane (e.g. mouse events).
+sub send_mouse {
+    my ($seq) = @_;
+    push @current_keys, "MOUSE($seq)";
+    system($tmux, 'send-keys', '-t', $SESSION, '-l', $seq);
+    select(undef, undef, undef, 0.05);
+}
+
 # Kill the session and print diagnostics if the subtest failed.
 sub teardown {
     my (%opts) = @_;
@@ -691,6 +699,73 @@ subtest 'cli options, csv modes, and compression' => sub {
     my $zst_pipe = capture();
     like($zst_pipe, qr/name/, 'header visible from piped zstd input');
     like($zst_pipe, qr/Alice/, 'data visible from piped zstd input');
+    teardown();
+};
+
+# ------------------------------------------------------------
+# Suite 11: Mouse Wheel Scrolling
+# ------------------------------------------------------------
+subtest 'mouse wheel scrolling' => sub {
+    # 1. Vertical scroll (wheel down and up)
+    launch(cmd => "$dless $fixtures/basic.tsv", height => 7);
+    my $before = capture();
+    like($before, qr/Alice/, 'Alice visible initially');
+    send_mouse("\e[<65;1;1M"); # wheel down
+    my $after_down = capture();
+    unlike($after_down, qr/\bAlice\b/, 'Alice scrolled off after wheel down');
+    like($after_down, qr/Bob/, 'Bob visible after wheel down');
+
+    send_mouse("\e[<64;1;1M"); # wheel up
+    my $after_up = capture();
+    like($after_up, qr/Alice/, 'Alice visible again after wheel up');
+    teardown();
+
+    # 2. Horizontal scroll (wheel left/right and Shift-wheel)
+    launch(cmd => "$dless $fixtures/wide.tsv", width => 80);
+    like(capture(), qr/Col offset:\s*0/, 'initial horizontal offset 0');
+    send_mouse("\e[<67;1;1M"); # wheel right
+    like(capture(), qr/Col offset:\s*10/, 'offset 10 after wheel right');
+
+    send_mouse("\e[<66;1;1M"); # wheel left
+    like(capture(), qr/Col offset:\s*0/, 'offset 0 after wheel left');
+
+    # Shift-wheel vertical mapped to horizontal (1 character at a time)
+    send_mouse("\e[<69;1;1M"); # Shift-wheel down -> right 1 char
+    like(capture(), qr/Col offset:\s*1\s*\|/, 'offset 1 after Shift-wheel down');
+
+    send_mouse("\e[<68;1;1M"); # Shift-wheel up -> left 1 char
+    like(capture(), qr/Col offset:\s*0\s*\|/, 'offset 0 after Shift-wheel up');
+
+    # 3. Mouse clicks are ignored
+    send_mouse("\e[<0;1;1M"); # left click press
+    send_mouse("\e[<0;1;1m"); # left click release
+    like(capture(), qr/Col offset:\s*0/, 'mouse click does not change state or offset');
+
+    # 4. Help screen dismissal on wheel
+    send_keys('h');
+    my $help_screen = capture();
+    like($help_screen, qr/KEYBINDINGS/, 'help screen visible');
+    send_mouse("\e[<65;1;1M"); # wheel down dismisses help
+    my $dismissed = capture();
+    unlike($dismissed, qr/KEYBINDINGS/, 'help dismissed by mouse wheel');
+    like($dismissed, qr/col1/, 'normal screen restored');
+
+    # 5. Wheel ignored during prompt mode
+    send_keys('/');
+    send_keys('f', 'o', 'o');
+    my $prompt_before = capture();
+    like($prompt_before, qr/\/foo/, 'search prompt /foo active');
+    send_mouse("\e[<65;1;1M"); # wheel down while prompt active
+    my $prompt_after = capture();
+    like($prompt_after, qr/\/foo/, 'prompt still intact after wheel event');
+    send_keys('Escape'); # exit prompt
+    teardown();
+
+    # 6. --no-mouse flag disables mouse tracking
+    launch(cmd => "$dless --no-mouse $fixtures/basic.tsv", height => 7);
+    send_mouse("\e[<65;1;1M"); # wheel down should be ignored when --no-mouse
+    my $no_mouse_screen = capture();
+    like($no_mouse_screen, qr/Alice/, 'Alice still visible when mouse is disabled');
     teardown();
 };
 

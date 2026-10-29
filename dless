@@ -18,7 +18,7 @@ use POSIX qw(ttyname);
 use File::Temp qw(tempfile);
 
 # ------ Version & Constants ------------------------------
-our $VERSION = '0.1';
+our $VERSION = '0.2';
 
 use constant MAX_ANALYSIS_ROWS => 10_000;
 use constant H_SCROLL_STEP     => 10;
@@ -39,12 +39,13 @@ sub format_usage_message {
     return <<"END";
 Tab-delimited or CSV file viewer.
 
-Usage: dless [-d DELIM | -c] [-N] [-v] [FILE]
-       cat FILE | dless [-d DELIM | -c] [-N] [-v]
+Usage: dless [-d DELIM | -c] [-N] [-v] [--no-mouse] [FILE]
+       cat FILE | dless [-d DELIM | -c] [-N] [-v] [--no-mouse]
 Options:
   -d, --delimiter DELIM  Field delimiter (default: tab)
   -c, --csv              Parse RFC 4180 CSV (removes quotes and unescapes data)
   -N                     Show line numbers
+      --no-mouse         Disable mouse tracking
   -v, --version          Show version number
   -h, --help             Show detailed help and interactive commands
 
@@ -56,8 +57,8 @@ END
 
 sub format_detailed_help {
     return <<"END";
-Usage: dless [-d DELIM | -c] [-N] [-v] [FILE]
-       cat FILE | dless [-d DELIM | -c] [-N] [-v]
+Usage: dless [-d DELIM | -c] [-N] [-v] [--no-mouse] [FILE]
+       cat FILE | dless [-d DELIM | -c] [-N] [-v] [--no-mouse]
 
 A tab-delimited or CSV file viewer with fixed-width columns and horizontal
 scrolling. Supports automatic decompression of gzip and zstd files.
@@ -66,6 +67,7 @@ Options:
   -d, --delimiter DELIM  Field delimiter (default: tab)
   -c, --csv              Parse RFC 4180 CSV (removes quotes and unescapes data)
   -N                     Show line numbers
+      --no-mouse         Disable mouse tracking
   -v, --version          Show version number
   -h, --help             Show this detailed help message
 
@@ -80,6 +82,8 @@ Navigation Commands:
   f, Ctrl-F, Space  Scroll down one screenful (page)
   g, Home           Jump to first row
   G, End            Jump to last row
+  Mouse wheel       Scroll up/down 1 row
+  Shift-mouse wheel Scroll left/right 1 character
 
 Search & Filter Commands:
   /                 Search data rows with a regular expression
@@ -120,6 +124,35 @@ sub detailed_help {
 # PURE FUNCTIONS --- no terminal I/O, testable in isolation
 # ------------------------------
 
+# Parse an SGR mouse escape sequence and return an action string:
+# 'scroll_up', 'scroll_down', 'scroll_left', 'scroll_right', or undef.
+sub parse_mouse_event {
+    my ($seq) = @_;
+    return undef unless defined $seq && length $seq;
+    return undef unless $seq =~ /^\e\[<(\d+);(\d+);(\d+)([Mm])$/;
+    my ($btn, $col, $row, $mode) = ($1, $2, $3, $4);
+    return undef unless $mode eq 'M';
+
+    if ($btn == 64) {
+        return 'scroll_up';
+    } elsif ($btn == 65) {
+        return 'scroll_down';
+    } elsif ($btn == 66) {
+        return 'scroll_left';
+    } elsif ($btn == 67) {
+        return 'scroll_right';
+    } elsif ($btn == 68) {
+        return 'shift_scroll_left';   # Shift + wheel up
+    } elsif ($btn == 69) {
+        return 'shift_scroll_right';  # Shift + wheel down
+    } elsif ($btn == 70) {
+        return 'shift_scroll_left';   # Shift + wheel left
+    } elsif ($btn == 71) {
+        return 'shift_scroll_right';  # Shift + wheel right
+    }
+    return undef;
+}
+
 # Safely compile a regular expression string.
 # Returns ($compiled_regex, $error_message).
 # If $pattern is undef or empty, returns (undef, undef).
@@ -143,16 +176,18 @@ sub compile_regex {
 #   delimiter    => string (default: "\t")
 #   csv          => 0 or 1
 #   line_numbers => 0 or 1
+#   mouse        => 0 or 1 (default: 1)
 #   help         => 0 or 1
 #   version      => 0 or 1
 #   files        => arrayref of remaining arguments
 # On error, returns (undef, $error_msg).
 sub parse_cli_args {
     my (@args) = @_;
-    my ($delim, $csv, $help, $numbers, $version);
-    $numbers = 0;
-    $help    = 0;
-    $version = 0;
+    my ($delim, $csv, $help, $numbers, $version, $no_mouse);
+    $numbers  = 0;
+    $help     = 0;
+    $version  = 0;
+    $no_mouse = 0;
     my $warn = '';
     my $ok;
     {
@@ -164,6 +199,7 @@ sub parse_cli_args {
             'N|numbers!'    => \$numbers,
             'help|h'        => \$help,
             'v|version'     => \$version,
+            'no-mouse'      => \$no_mouse,
         );
     }
     if (!$ok) {
@@ -182,6 +218,7 @@ sub parse_cli_args {
         delimiter    => $delim,
         csv          => $csv ? 1 : 0,
         line_numbers => $numbers ? 1 : 0,
+        mouse        => $no_mouse ? 0 : 1,
         help         => $help ? 1 : 0,
         version      => $version ? 1 : 0,
         files        => \@args,
@@ -1461,6 +1498,7 @@ sub _main {
     my $opt_delim     = $opts->{delimiter};
     my $opt_csv       = $opts->{csv};
     my $opt_line_nums = $opts->{line_numbers};
+    my $opt_mouse     = $opts->{mouse};
     @ARGV             = @{ $opts->{files} };
 
     # ------ Load data ------------------------------
@@ -1621,6 +1659,7 @@ sub _main {
         save_history_file($history_file, $search_history_ref, $filter_history_ref, 100) if defined $history_file;
         close $data_fh if defined $data_fh;
         ReadMode('restore');
+        print "\e[?1000l\e[?1006l" if $opt_mouse;
         print "\e[?25h\e[?1049l";  # show cursor, restore screen
     };
 
@@ -1630,6 +1669,7 @@ sub _main {
     $SIG{WINCH} = sub { $winch_flag = 1 };
 
     print "\e[?1049h\e[?25l";  # alt screen, hide cursor
+    print "\e[?1000h\e[?1006h" if $opt_mouse;
     ReadMode('cbreak');
 
     # ------ Scroll, Search & Filter state ------------------------------
@@ -1902,6 +1942,10 @@ sub _main {
         my $seq = '';
         while (1) {
             my $c = ReadKey(-1);
+            if (!defined $c && length($seq) > 0) {
+                select(undef, undef, undef, 0.005);
+                $c = ReadKey(-1);
+            }
             last unless defined $c;
             $seq .= $c;
             last if $c =~ /[A-Za-z~]/;
@@ -1924,14 +1968,22 @@ sub _main {
         my $key = $read_key->();
         next unless defined $key;
 
+        my $mouse_action = ($opt_mouse && $key =~ /^\e\[</) ? parse_mouse_event($key) : undef;
+
         # Any key dismisses help overlay
         if ($show_help) {
+            if ($key =~ /^\e\[</ && !defined $mouse_action) {
+                next;
+            }
             $show_help = 0;
             $draw_screen->();
             next;
         }
 
         if (defined $prompt_mode) {
+            if ($key =~ /^\e\[</) {
+                next;
+            }
             if ($key eq "\e" || $key eq "\x03") {
                 if ($prompt_mode eq 'w' || $prompt_mode eq 'w ') {
                     $show_col_nums = $saved_show_col_nums;
@@ -2048,6 +2100,31 @@ sub _main {
                 $prompt_state = { buffer => '', cursor => 0, history => $filter_history_ref, hist_idx => undef, draft => '' };
             }
             $draw_screen->();
+            next;
+        }
+
+        if ($key =~ /^\e\[</) {
+            if ($opt_mouse && defined $mouse_action) {
+                if ($mouse_action eq 'scroll_up') {
+                    $v_offset = clamp($v_offset - 1, 0, $max_v->());
+                    $draw_screen->();
+                } elsif ($mouse_action eq 'scroll_down') {
+                    $v_offset = clamp($v_offset + 1, 0, $max_v->());
+                    $draw_screen->();
+                } elsif ($mouse_action eq 'scroll_left') {
+                    $h_offset = clamp($h_offset - H_SCROLL_STEP, 0, $max_h->());
+                    $draw_screen->();
+                } elsif ($mouse_action eq 'scroll_right') {
+                    $h_offset = clamp($h_offset + H_SCROLL_STEP, 0, $max_h->());
+                    $draw_screen->();
+                } elsif ($mouse_action eq 'shift_scroll_left') {
+                    $h_offset = clamp($h_offset - 1, 0, $max_h->());
+                    $draw_screen->();
+                } elsif ($mouse_action eq 'shift_scroll_right') {
+                    $h_offset = clamp($h_offset + 1, 0, $max_h->());
+                    $draw_screen->();
+                }
+            }
             next;
         }
 
